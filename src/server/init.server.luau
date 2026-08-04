@@ -1,3 +1,4 @@
-local ServiceBootstrap = require(script.Parent.Core.ServiceBootstrap)
+local Core = script:WaitForChild("Core")
+local ServiceBootstrap = require(Core:WaitForChild("ServiceBootstrap"))
 
 ServiceBootstrap.start()

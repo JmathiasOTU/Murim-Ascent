@@ -1,0 +1,6 @@
+{
+  "files.exclude": {
+    "src/workspace": true,
+    "src/serverStorage": true
+  }
+}

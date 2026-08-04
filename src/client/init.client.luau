@@ -1,3 +1,4 @@
-local ClientBootstrap = require(script.Parent.Core.ClientBootstrap)
+local Core = script:WaitForChild("Core")
+local ClientBootstrap = require(Core:WaitForChild("ClientBootstrap"))
 
 ClientBootstrap.start()
