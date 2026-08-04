@@ -1,4 +1,5 @@
 -- src/client/Movement/AnimationController.luau
+local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -7,13 +8,21 @@ local MovementStateDefs = require(ReplicatedStorage.Shared.Movement.MovementStat
 
 local AnimationController = {}
 
+-- 1. Standard Movement Animations
 local ANIMATION_IDS = {
 	[MovementStateDefs.Idle] = "rbxassetid://100161560231153", 
 	[MovementStateDefs.Walking] = "rbxassetid://71563071935374",
-	[MovementStateDefs.Running] = "rbxassetid://88091162849923",
+	[MovementStateDefs.Running] = "rbxassetid://88091162849923", -- Replace with Run ID
 	[MovementStateDefs.Crouching] = "rbxassetid://103866147082035", 
 	[MovementStateDefs.CrouchWalking] = "rbxassetid://74749735884197", 
-	[MovementStateDefs.Dashing] = "rbxassetid://83619294340495",
+}
+
+-- 2. Directional Dash Animations
+local DASH_ANIMATION_IDS = {
+	Forward = "rbxassetid://80647979865669",  -- Replace with your Forward Dash ID
+	Backward = "rbxassetid://102072453640654", -- Replace with your Backstep ID
+	Left = "rbxassetid://132828332941984",     -- Replace with your Left Dash ID
+	Right = "rbxassetid://109325396920599",    -- Replace with your Right Dash ID
 }
 
 -- Lean Constants
@@ -37,6 +46,8 @@ function AnimationController.start()
 		local rootJoint = getRootJoint(character)
 		
 		local loadedTracks = {}
+		local loadedDashTracks = {}
+		
 		local fsmConnection = nil
 		local renderConnection = nil
 		
@@ -44,29 +55,76 @@ function AnimationController.start()
 		local currentRoll = 0
 		local currentPitch = 0
 
-		-- 1. Preload standard animations
+		-- Preload Standard Tracks
 		for stateName, animId in pairs(ANIMATION_IDS) do
 			local anim = Instance.new("Animation")
 			anim.AnimationId = animId
-			loadedTracks[stateName] = animator:LoadAnimation(anim)
-			loadedTracks[stateName].Looped = stateName ~= MovementStateDefs.Dashing
+			local track = animator:LoadAnimation(anim)
+			track.Looped = true 
+			loadedTracks[stateName] = track
+		end
+		
+		-- Preload Dash Tracks (Ensure these DO NOT loop)
+		for dirName, animId in pairs(DASH_ANIMATION_IDS) do
+			local anim = Instance.new("Animation")
+			anim.AnimationId = animId
+			local track = animator:LoadAnimation(anim)
+			track.Looped = false 
+			track.Priority = Enum.AnimationPriority.Action -- Ensure dashes override walking/running
+			loadedDashTracks[dirName] = track
 		end
 
 		if loadedTracks[fsm.CurrentState] then
 			loadedTracks[fsm.CurrentState]:Play()
 		end
 
-		-- 2. Handle State Transitions (Standard Animations)
+		-- Handle State Transitions (Standard & Directional Dashing)
 		fsmConnection = fsm.StateChanged:Connect(function(oldState, newState)
-			if loadedTracks[oldState] then
+			
+			-- 1. ALWAYS STOP THE OLD STATE FIRST
+			if oldState == MovementStateDefs.Dashing then
+				for _, track in pairs(loadedDashTracks) do
+					if track.IsPlaying then track:Stop(0.2) end
+				end
+			elseif loadedTracks[oldState] then
 				loadedTracks[oldState]:Stop(0.1) 
 			end
-			if loadedTracks[newState] then
-				loadedTracks[newState]:Play(0.1)
+			
+			-- 2. PLAY THE NEW STATE
+			if newState == MovementStateDefs.Dashing then
+				local moveDir = humanoid.MoveDirection
+				local trackToPlay = loadedDashTracks.Backward 
+				
+				if moveDir.Magnitude > 0 then
+					local localDir = hrp.CFrame:VectorToObjectSpace(moveDir)
+					if math.abs(localDir.Z) > math.abs(localDir.X) then
+						if localDir.Z < 0 then
+							trackToPlay = loadedDashTracks.Forward
+						else
+							trackToPlay = loadedDashTracks.Backward
+						end
+					else
+						if localDir.X < 0 then
+							trackToPlay = loadedDashTracks.Left
+						else
+							trackToPlay = loadedDashTracks.Right
+						end
+					end
+				end
+
+				if trackToPlay then
+					trackToPlay:Play(0.05) 
+				end
+				
+			else
+				-- Play standard animation
+				if loadedTracks[newState] then
+					loadedTracks[newState]:Play(0.1)
+				end
 			end
 		end)
 		
-		-- 3. Handle Procedural Rig Manipulation (Leaning)
+		-- Handle Procedural Rig Manipulation (Leaning)
 		if rootJoint then
 			renderConnection = RunService.RenderStepped:Connect(function(dt)
 				local moveDir = humanoid.MoveDirection
@@ -94,17 +152,16 @@ function AnimationController.start()
 			end)
 		end
 		
-		-- 4. Unified Garbage Collection
+		-- Unified Garbage Collection
 		humanoid.Died:Once(function()
-			if fsmConnection then
-				fsmConnection:Disconnect()
-			end
-
-			if renderConnection then
-				renderConnection:Disconnect()
-			end
+			if fsmConnection then fsmConnection:Disconnect() end
+			if renderConnection then renderConnection:Disconnect() end
 			
 			for _, track in pairs(loadedTracks) do
+				track:Stop()
+				track:Destroy()
+			end
+			for _, track in pairs(loadedDashTracks) do
 				track:Stop()
 				track:Destroy()
 			end

@@ -4,9 +4,10 @@ return {
 	SprintSpeed = 28,
 	CrouchSpeed = 6,
 	JumpPower = 50,
+	WalkThreshold = 0.1,
 
 	-- Qinggong mechanics
-	DashPower = 90,
+	DashPower = 150,
 	DashDuration = 0.5,
 	DashCooldown = 1.5,
 }

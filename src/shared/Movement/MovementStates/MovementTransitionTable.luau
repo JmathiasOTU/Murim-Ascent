@@ -23,13 +23,13 @@ return {
 		[MovementStateDefs.Idle] = true,
 		[MovementStateDefs.CrouchWalking] = true,
 		[MovementStateDefs.Running] = true, -- Sprinting breaks crouch
-		[MovementStateDefs.Dashing] = true,
+		[MovementStateDefs.Dashing] = false,
 	},
 	[MovementStateDefs.CrouchWalking] = {
 		[MovementStateDefs.Walking] = true,
 		[MovementStateDefs.Crouching] = true,
 		[MovementStateDefs.Running] = true, -- Sprinting breaks crouch walking
-		[MovementStateDefs.Dashing] = true,
+		[MovementStateDefs.Dashing] = false,
 	},
 	[MovementStateDefs.Dashing] = {
 		[MovementStateDefs.Idle] = true,

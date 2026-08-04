@@ -1,21 +1,24 @@
+-- src/client/Movement/ClientMovementState.luau
 local Players = game:GetService("Players")
 local ContextActionService = game:GetService("ContextActionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+-- Shared Architecture Dependencies
 local LemonSignal = require(ReplicatedStorage.Shared.StateMachine.LemonSignal)
 local FSM = require(ReplicatedStorage.Shared.StateMachine.FSM)
-local MovementConstants = require(ReplicatedStorage.Shared.Movement.MovementConstants)
 local MovementStateDefs = require(ReplicatedStorage.Shared.Movement.MovementStates.MovementStateDefs)
 local MovementTransitionTable = require(ReplicatedStorage.Shared.Movement.MovementStates.MovementTransitionTable)
+local MovementConstants = require(ReplicatedStorage.Shared.Movement.MovementConstants)
+local MovementValidationUtils = require(ReplicatedStorage.Shared.Movement.MovementValidationUtils)
+local RemoteRegistry = require(ReplicatedStorage.Shared.Net.RemoteRegistry)
 
 local ClientMovementState = {}
 ClientMovementState.FSMReady = LemonSignal.new()
 ClientMovementState.CurrentFSM = nil
 
-local WALK_THRESHOLD = 0.1
-
 function ClientMovementState.start()
 	local player = Players.LocalPlayer
+	local MovementIntent = RemoteRegistry.getEvent("MovementIntent")
 
 	local function onCharacterAdded(character)
 		if ClientMovementState.CurrentFSM then
@@ -27,19 +30,27 @@ function ClientMovementState.start()
 		local fsm = FSM.new(MovementStateDefs.Idle, MovementTransitionTable)
 		ClientMovementState.CurrentFSM = fsm
 		
-		-- Variables to track intent
+		local humanoid = character:WaitForChild("Humanoid")
+		local fsm = FSM.new(MovementStateDefs.Idle, MovementTransitionTable)
+		ClientMovementState.CurrentFSM = fsm
+		
+		-- DEBUG: Watch Client FSM
+		fsm.StateChanged:Connect(function(oldState, newState)
+			print(string.format("[Client Movement] %s -> %s", tostring(oldState), tostring(newState)))
+		end)
+
+
 		local isCrouchHeld = false
 		local isRunningHeld = false
 		local currentSpeed = 0
 		local lastDashTime = 0
 
-		-- Centralized State Evaluator
-		local function evaluateState(forceFromDash)
-			if fsm.CurrentState == MovementStateDefs.Dashing and not forceFromDash then
-				return
-			end
+		-- 2. Centralized State Evaluator
+		local function evaluateState(forceExitDash)
+			if not forceExitDash and fsm.CurrentState == MovementStateDefs.Dashing then return end
 
-			local isMoving = currentSpeed > WALK_THRESHOLD
+			-- DEEPWOKEN POLISH: Base movement on Player Intent, not physical sliding
+			local isMoving = humanoid.MoveDirection.Magnitude > 0 
 			local targetState = MovementStateDefs.Idle
 
 			if isMoving then
@@ -58,64 +69,62 @@ function ClientMovementState.start()
 				end
 			end
 
-			fsm:transition(targetState)
+			-- Attempt local prediction transition
+			local success = fsm:transition(targetState)
+			if success then
+				MovementIntent:FireServer("UpdateState", { targetState = targetState })
+			end
 		end
 
-		-- 1. Listen for Speed Changes
-		humanoid.Running:Connect(function(speed)
-			currentSpeed = speed
-			evaluateState()
+		humanoid:GetPropertyChangedSignal("MoveDirection"):Connect(function()
+			evaluateState(false)
 		end)
 
-		-- 2. Listen for Crouch Input
-		ContextActionService:BindAction("ToggleCrouch", function(_, inputState, _)
+		ContextActionService:BindAction("ToggleCrouch", function(actionName, inputState, inputObject)
 			if inputState == Enum.UserInputState.Begin then
-				isCrouchHeld = not isCrouchHeld
-				evaluateState()
+				isCrouchHeld = not isCrouchHeld 
+				evaluateState(false)
 			end
 			return Enum.ContextActionResult.Pass
 		end, false, Enum.KeyCode.C, Enum.KeyCode.LeftControl)
 
-		-- 3. Listen for Run Input
-		ContextActionService:BindAction("ToggleRun", function(_, inputState, _)
-			-- Hold to sprint
+		ContextActionService:BindAction("ToggleRun", function(actionName, inputState, inputObject)
 			if inputState == Enum.UserInputState.Begin then
 				isRunningHeld = true
 			elseif inputState == Enum.UserInputState.End then
 				isRunningHeld = false
 			end
-			evaluateState()
+			evaluateState(false)
 			return Enum.ContextActionResult.Pass
 		end, false, Enum.KeyCode.LeftShift)
 
-		-- 4. Listen for Q-Dash Input
-		ContextActionService:BindAction("TriggerDash", function(_, inputState, _)
-			if inputState ~= Enum.UserInputState.Begin then
-				return Enum.ContextActionResult.Pass
+		ContextActionService:BindAction("TriggerDash", function(actionName, inputState, inputObject)
+			if inputState == Enum.UserInputState.Begin then
+				local now = tick()
+				
+				if MovementValidationUtils.canDash(lastDashTime, now) and MovementValidationUtils.isLegalDashState(fsm.CurrentState, MovementTransitionTable) then
+					
+					local success = fsm:transition(MovementStateDefs.Dashing)
+					if success then
+						lastDashTime = now
+						
+						MovementIntent:FireServer("RequestDash")
+						
+						-- End the dash state locally and FORCE the evaluation
+						task.delay(MovementConstants.DashDuration, function()
+							if fsm.CurrentState == MovementStateDefs.Dashing then
+								evaluateState(true) -- Pass TRUE to bypass the safety catch!
+							end
+						end)
+					end
+				end
 			end
-
-			local now = tick()
-			local canDash = (now - lastDashTime) >= MovementConstants.DashCooldown
-			if not canDash or fsm.CurrentState == MovementStateDefs.Dashing then
-				return Enum.ContextActionResult.Pass
-			end
-
-			local success = fsm:transition(MovementStateDefs.Dashing)
-			if success then
-				lastDashTime = now
-
-				task.delay(MovementConstants.DashDuration, function()
-					evaluateState(true)
-				end)
-			end
-
 			return Enum.ContextActionResult.Pass
 		end, false, Enum.KeyCode.Q)
 
-		-- Cleanup when character dies
 		humanoid.Died:Once(function()
 			ContextActionService:UnbindAction("ToggleCrouch")
-			ContextActionService:UnbindAction("ToggleRun")
+			ContextActionService:UnbindAction("ToggleRun") 
 			ContextActionService:UnbindAction("TriggerDash")
 		end)
 
