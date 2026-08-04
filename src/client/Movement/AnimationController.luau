@@ -1,69 +1,115 @@
 -- src/client/Movement/AnimationController.luau
-local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local MovementAnimations = require(ReplicatedStorage.Shared.Movement.MovementAnimations)
+local ClientMovementState = require(script.Parent.ClientMovementState)
+local MovementStateDefs = require(ReplicatedStorage.Shared.Movement.MovementStates.MovementStateDefs)
 
 local AnimationController = {}
 
-local tracks = {}
-local currentTrack = nil
+local ANIMATION_IDS = {
+	[MovementStateDefs.Idle] = "rbxassetid://100161560231153", 
+	[MovementStateDefs.Walking] = "rbxassetid://71563071935374",
+	[MovementStateDefs.Running] = "rbxassetid://88091162849923",
+	[MovementStateDefs.Crouching] = "rbxassetid://103866147082035", 
+	[MovementStateDefs.CrouchWalking] = "rbxassetid://74749735884197", 
+	[MovementStateDefs.Dashing] = "rbxassetid://83619294340495",
+}
 
-local function loadTracks(humanoid)
-	local animator = humanoid:FindFirstChildOfClass("Animator")
-	if not animator then
-		animator = Instance.new("Animator")
-		animator.Parent = humanoid
+-- Lean Constants
+local MAX_LEAN_STRAFE = math.rad(12)
+local MAX_LEAN_FORWARD = math.rad(12)
+local LEAN_SPEED = 10
+
+local function getRootJoint(character)
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if hrp then
+		return hrp:FindFirstChild("RootJoint")
 	end
-
-	tracks = {}
-	for name, assetId in MovementAnimations do
-		local anim = Instance.new("Animation")
-		anim.AnimationId = assetId
-		tracks[name] = animator:LoadAnimation(anim)
-	end
-
-	tracks.Walk.Looped = true
-	tracks.Idle.Looped = true
-end
-
-local function playTrack(name)
-	if currentTrack == name then
-		return -- already playing this one, don't restart it
-	end
-
-	if currentTrack and tracks[currentTrack] then
-		tracks[currentTrack]:Stop(0.15)
-	end
-
-	if tracks[name] then
-		tracks[name]:Play(0.15)
-	end
-
-	currentTrack = name
+	return nil
 end
 
 function AnimationController.start()
-	local player = Players.LocalPlayer
-
-	local function onCharacterAdded(character)
+	ClientMovementState.FSMReady:Connect(function(fsm, character)
 		local humanoid = character:WaitForChild("Humanoid")
-		loadTracks(humanoid)
-		currentTrack = nil
+		local animator = humanoid:WaitForChild("Animator")
+		local hrp = character:WaitForChild("HumanoidRootPart")
+		local rootJoint = getRootJoint(character)
+		
+		local loadedTracks = {}
+		local fsmConnection = nil
+		local renderConnection = nil
+		
+		local baseC0 = rootJoint and rootJoint.C0 or CFrame.new()
+		local currentRoll = 0
+		local currentPitch = 0
 
-		humanoid.Running:Connect(function(speed)
-			if speed > 0.5 then
-				playTrack("Walk")
-			else
-				playTrack("Idle")
+		-- 1. Preload standard animations
+		for stateName, animId in pairs(ANIMATION_IDS) do
+			local anim = Instance.new("Animation")
+			anim.AnimationId = animId
+			loadedTracks[stateName] = animator:LoadAnimation(anim)
+			loadedTracks[stateName].Looped = stateName ~= MovementStateDefs.Dashing
+		end
+
+		if loadedTracks[fsm.CurrentState] then
+			loadedTracks[fsm.CurrentState]:Play()
+		end
+
+		-- 2. Handle State Transitions (Standard Animations)
+		fsmConnection = fsm.StateChanged:Connect(function(oldState, newState)
+			if loadedTracks[oldState] then
+				loadedTracks[oldState]:Stop(0.1) 
+			end
+			if loadedTracks[newState] then
+				loadedTracks[newState]:Play(0.1)
 			end
 		end)
-	end
+		
+		-- 3. Handle Procedural Rig Manipulation (Leaning)
+		if rootJoint then
+			renderConnection = RunService.RenderStepped:Connect(function(dt)
+				local moveDir = humanoid.MoveDirection
+				local targetRoll, targetPitch = 0, 0
 
-	if player.Character then
-		onCharacterAdded(player.Character)
-	end
-	player.CharacterAdded:Connect(onCharacterAdded)
+				if moveDir.Magnitude < 0.05 and math.abs(currentRoll) < 0.001 and math.abs(currentPitch) < 0.001 then
+					if currentRoll ~= 0 or currentPitch ~= 0 then
+						currentRoll, currentPitch = 0, 0
+						rootJoint.C0 = baseC0
+					end
+					return 
+				end
+
+				if moveDir.Magnitude > 0.05 then
+					local localDir = hrp.CFrame:VectorToObjectSpace(moveDir)
+					targetRoll = -localDir.X * MAX_LEAN_STRAFE
+					targetPitch = -localDir.Z * MAX_LEAN_FORWARD
+				end
+
+				local alpha = 1 - math.exp(-LEAN_SPEED * dt)
+				currentRoll = currentRoll + (targetRoll - currentRoll) * alpha
+				currentPitch = currentPitch + (targetPitch - currentPitch) * alpha
+
+				rootJoint.C0 = baseC0 * CFrame.Angles(currentPitch, 0, currentRoll)
+			end)
+		end
+		
+		-- 4. Unified Garbage Collection
+		humanoid.Died:Once(function()
+			if fsmConnection then
+				fsmConnection:Disconnect()
+			end
+
+			if renderConnection then
+				renderConnection:Disconnect()
+			end
+			
+			for _, track in pairs(loadedTracks) do
+				track:Stop()
+				track:Destroy()
+			end
+		end)
+	end)
 end
 
 return AnimationController

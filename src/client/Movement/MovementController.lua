@@ -1,87 +1,41 @@
-local RunService = game:GetService("RunService")
-local Players = game:GetService("Players")
+-- src/client/Movement/MovementController.lua
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local ClientMovementState = require(script.Parent.ClientMovementState)
+local MovementConstants = require(ReplicatedStorage.Shared.Movement.MovementConstants)
+local MovementStateDefs = require(ReplicatedStorage.Shared.Movement.MovementStates.MovementStateDefs)
 
 local MovementController = {}
-
-local MAX_LEAN_STRAFE = math.rad(12)
-local MAX_LEAN_FORWARD = math.rad(12)
-local LEAN_SPEED = 10
-
-local currentRoll = 0
-local currentPitch = 0
-local connection 
-
-
-
-local function getRootJoint(character)
-    local hrp = character:FindFirstChild("HumanoidRootPart")
-    if hrp then
-        return hrp:FindFirstChild("RootJoint")
-    end
-    return nil
-end
+local started = false
 
 function MovementController.start()
-    local player = Players.LocalPlayer
+	if started then
+		return
+	end
+	started = true
 
-    local function onCharacterAdded(character)
-        local humanoid = character:WaitForChild("Humanoid")
-        local hrp = character:WaitForChild("HumanoidRootPart")
-        local rootJoint = getRootJoint(character)
-        
-        if not rootJoint then
-            warn("[MovementController] No root Motor6D found for lean")
-            return
-        end
+	-- Subscribe to the centralized state manager
+	ClientMovementState.FSMReady:Connect(function(fsm, character)
+		local humanoid = character:WaitForChild("Humanoid")
+		
+		-- Initialize default walk speed
+		humanoid.WalkSpeed = MovementConstants.WalkSpeed
 
-        local baseC0 = rootJoint.C0
-        currentRoll = 0
-        currentPitch = 0
-
-        if connection then
-            connection:Disconnect()
-        end
-
-        connection = RunService.RenderStepped:Connect(function(dt)
-            local moveDir = humanoid.MoveDirection
-            local targetRoll, targetPitch = 0, 0
-
-            
-            if moveDir.Magnitude < 0.05 and math.abs(currentRoll) < 0.001 and math.abs(currentPitch) < 0.001 then
-                -- Snap exactly to 0 to prevent micro-floating point errors
-                if currentRoll ~= 0 or currentPitch ~= 0 then
-                    currentRoll, currentPitch = 0, 0
-                    rootJoint.C0 = baseC0
-                end
-                return 
-            end
-
-            if moveDir.Magnitude > 0.05 then
-                local localDir = hrp.CFrame:VectorToObjectSpace(moveDir)
-                targetRoll = -localDir.X * MAX_LEAN_STRAFE
-                targetPitch = -localDir.Z * MAX_LEAN_FORWARD
-            end
-
-            local alpha = 1 - math.exp(-LEAN_SPEED * dt)
-            currentRoll = currentRoll + (targetRoll - currentRoll) * alpha
-            currentPitch = currentPitch + (targetPitch - currentPitch) * alpha
-
-            rootJoint.C0 = baseC0 * CFrame.Angles(currentPitch, 0, currentRoll)
-        end)
-        
-        -- OPTIMIZATION 3: Disconnect the RenderStepped connection when the humanoid dies to prevent memory leaks
-        humanoid.Died:Connect(function()
-            if connection then
-                connection:Disconnect()
-                connection = nil
-            end
-        end)
-    end
-
-    if player.Character then
-        onCharacterAdded(player.Character)
-    end
-    player.CharacterAdded:Connect(onCharacterAdded)
+		-- Listen for state changes to adjust physical movement attributes
+		fsm.StateChanged:Connect(function(oldState, newState)
+			if newState == MovementStateDefs.Crouching or newState == MovementStateDefs.CrouchWalking then
+				humanoid.WalkSpeed = MovementConstants.CrouchSpeed
+			elseif newState == MovementStateDefs.Running then
+				humanoid.WalkSpeed = MovementConstants.RunSpeed
+			elseif newState == MovementStateDefs.Idle or newState == MovementStateDefs.Walking then
+				humanoid.WalkSpeed = MovementConstants.WalkSpeed
+			end
+			
+			-- Future Qinggong mechanic hook-ins go here:
+			-- elseif newState == MovementStateDefs.Dashing then
+			--    Apply dash vector force, etc.
+		end)
+	end)
 end
 
 return MovementController
