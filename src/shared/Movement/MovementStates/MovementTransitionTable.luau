@@ -18,6 +18,9 @@ return {
 		[MovementStateDefs.Walking] = true,
 		[MovementStateDefs.CrouchWalking] = true, -- If they crouch while running
 		[MovementStateDefs.Dashing] = true,
+		[MovementStateDefs.Sliding] = true,
+		[MovementStateDefs.Jumping] = true,
+		[MovementStateDefs.Falling] = true,
 	},
 	[MovementStateDefs.Crouching] = {
 		[MovementStateDefs.Idle] = true,
@@ -37,5 +40,22 @@ return {
 		[MovementStateDefs.Running] = true,
 		[MovementStateDefs.Crouching] = true,
 		[MovementStateDefs.CrouchWalking] = true,
+	},
+	[MovementStateDefs.Sliding] = {
+		[MovementStateDefs.Running] = true,
+		[MovementStateDefs.Jumping] = true,
+		[MovementStateDefs.Falling] = true,
+		
+	},
+	[MovementStateDefs.Jumping] = {
+		[MovementStateDefs.Running] = true,
+		[MovementStateDefs.Falling] = true,
+		[MovementStateDefs.Dashing] = true,
+	},
+	[MovementStateDefs.Falling] = {
+		[MovementStateDefs.Running] = true,
+		[MovementStateDefs.Idle] = true,
+		[MovementStateDefs.Dashing] = true,
+		[MovementStateDefs.Walking] = true,
 	},
 }

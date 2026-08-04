@@ -12,17 +12,18 @@ local AnimationController = {}
 local ANIMATION_IDS = {
 	[MovementStateDefs.Idle] = "rbxassetid://100161560231153", 
 	[MovementStateDefs.Walking] = "rbxassetid://71563071935374",
-	[MovementStateDefs.Running] = "rbxassetid://88091162849923", -- Replace with Run ID
+	[MovementStateDefs.Running] = "rbxassetid://88091162849923", 
 	[MovementStateDefs.Crouching] = "rbxassetid://103866147082035", 
 	[MovementStateDefs.CrouchWalking] = "rbxassetid://74749735884197", 
+	[MovementStateDefs.Sliding] = "rbxassetid://122916678970923", 
 }
 
 -- 2. Directional Dash Animations
 local DASH_ANIMATION_IDS = {
-	Forward = "rbxassetid://80647979865669",  -- Replace with your Forward Dash ID
-	Backward = "rbxassetid://102072453640654", -- Replace with your Backstep ID
-	Left = "rbxassetid://132828332941984",     -- Replace with your Left Dash ID
-	Right = "rbxassetid://109325396920599",    -- Replace with your Right Dash ID
+	Forward = "rbxassetid://80647979865669",  
+	Backward = "rbxassetid://102072453640654", 
+	Left = "rbxassetid://132828332941984",     
+	Right = "rbxassetid://109325396920599",    
 }
 
 -- Lean Constants

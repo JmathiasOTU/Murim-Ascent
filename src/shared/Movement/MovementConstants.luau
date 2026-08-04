@@ -10,4 +10,9 @@ return {
 	DashPower = 150,
 	DashDuration = 0.5,
 	DashCooldown = 1.5,
+
+	-- Sliding Mechanics --
+
+	SlideBoostMultiplier = 1.4,
+	SlideFrictionDuration = 0.8,
 }

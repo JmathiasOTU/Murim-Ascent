@@ -17,7 +17,7 @@ function MovementStateService.start()
 	local MovementIntent = RemoteRegistry.getEvent("MovementIntent")
 	
 	-- 1. Initialize Server FSM on spawn
-	-- 1. Initialize Server FSM on spawn
+	
 	local function onCharacterAdded(character, player)
 		local fsm = FSM.new(MovementStateDefs.Idle, MovementTransitionTable)
 		

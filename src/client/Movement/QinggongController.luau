@@ -39,65 +39,60 @@ function QinggongController.start()
 
 		fsm.StateChanged:Connect(function(oldState, newState)
 			
-			if newState == MovementStateDefs.Dashing then
-				-- 1. Determine Direction
-				local moveVector = humanoid.MoveDirection
-				local dashDirection
+			if newState == MovementStateDefs.Dashing or newState == MovementStateDefs.Sliding then
+				cleanupDash() -- Strip any old constraints
 
-				if moveVector.Magnitude > 0 then
-					dashDirection = moveVector.Unit
-				else
-					-- Default backstep if no input keys are held
-					dashDirection = -hrp.CFrame.LookVector
-				end
-
-				-- Clean up any lingering constraints just in case
-				cleanupDash()
-
-				-- 2. Create the Physics Constraints
+				-- Create the Physics Constraints
 				activeDashAttachment = Instance.new("Attachment")
-				activeDashAttachment.Name = "DashAttachment"
+				activeDashAttachment.Name = "QinggongAttachment"
 				activeDashAttachment.Parent = hrp
 
 				activeDashVelocity = Instance.new("LinearVelocity")
-				activeDashVelocity.Name = "DashVelocity"
+				activeDashVelocity.Name = "QinggongVelocity"
 				activeDashVelocity.Attachment0 = activeDashAttachment
 				activeDashVelocity.RelativeTo = Enum.ActuatorRelativeTo.World
 				activeDashVelocity.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
-				
 				activeDashVelocity.ForceLimitMode = Enum.ForceLimitMode.PerAxis
 				activeDashVelocity.MaxAxesForce = Vector3.new(100000, 0, 100000) 
-
-				-- Set the explosive initial velocity
-				local startVelocity = dashDirection * MovementConstants.DashPower
-				activeDashVelocity.VectorVelocity = startVelocity
 				activeDashVelocity.Parent = hrp
 
-				-- NEW LOGIC: Calculate the Momentum Carry-over
-				local targetEndVelocity = Vector3.new(0, 0, 0)
-				
-				if humanoid.MoveDirection.Magnitude > 0 then
-					-- If they are pressing W/A/S/D, decelerate to WalkSpeed instead of 0
-					-- This prevents the "brick wall" stop and smoothly blends into running
-					targetEndVelocity = dashDirection * MovementConstants.WalkSpeed 
+				local tweenInfo
+				local targetEndVelocity
+
+				if newState == MovementStateDefs.Dashing then
+					-- DASH LOGIC
+					local moveVector = humanoid.MoveDirection
+					local dashDirection = moveVector.Magnitude > 0 and moveVector.Unit or -hrp.CFrame.LookVector
+					
+					activeDashVelocity.VectorVelocity = dashDirection * MovementConstants.DashPower
+					targetEndVelocity = dashDirection * MovementConstants.WalkSpeed
+					
+					tweenInfo = TweenInfo.new(MovementConstants.DashDuration, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out)
+
+				elseif newState == MovementStateDefs.Sliding then
+					-- SLIDE LOGIC (Momentum Based)
+					-- Capture exact velocity at the moment of the slide, ignoring Y (gravity)
+					local currentMomentum = hrp.AssemblyLinearVelocity * Vector3.new(1, 0, 1)
+					local slideDirection = currentMomentum.Magnitude > 0 and currentMomentum.Unit or hrp.CFrame.LookVector
+					
+					-- Give it a kick based on how fast they were going
+					activeDashVelocity.VectorVelocity = slideDirection * (currentMomentum.Magnitude * MovementConstants.SlideBoostMultiplier)
+					
+					-- Target slowing down to crouch speed
+					targetEndVelocity = slideDirection * MovementConstants.CrouchSpeed 
+					
+					-- Quad easing simulates ground friction perfectly (smoother than Exponential)
+					tweenInfo = TweenInfo.new(MovementConstants.SlideFrictionDuration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 				end
 
-				-- 3. Smooth Deceleration (Easing)
-				local tweenInfo = TweenInfo.new(
-					MovementConstants.DashDuration,
-					Enum.EasingStyle.Exponential, 
-					Enum.EasingDirection.Out
-				)
-
+				-- Smooth Deceleration
 				activeTween = TweenService:Create(activeDashVelocity, tweenInfo, {
-					VectorVelocity = targetEndVelocity -- Target the carry-over momentum!
+					VectorVelocity = targetEndVelocity
 				})
-
 				activeTween:Play()
 				
-			elseif oldState == MovementStateDefs.Dashing then
-				-- Instantly strip the constraints the millisecond the state changes 
-				-- (e.g. they get stunned, or the 0.3s dash timer ends)
+			elseif oldState == MovementStateDefs.Dashing or oldState == MovementStateDefs.Sliding then
+				-- Instantly strip constraints when state changes (e.g., they stand up, dash, or slide ends)
 				cleanupDash()
 			end
 		end)
