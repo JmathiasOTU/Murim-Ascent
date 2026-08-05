@@ -13,6 +13,6 @@ return {
 
 	-- Sliding Mechanics --
 
-	SlideBoostMultiplier = 1.4,
-	SlideFrictionDuration = 0.8,
+	SlideBoostMultiplier = 2.8,
+	SlideFrictionDuration = 1.2,
 }

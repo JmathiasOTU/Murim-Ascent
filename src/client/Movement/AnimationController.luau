@@ -16,6 +16,7 @@ local ANIMATION_IDS = {
 	[MovementStateDefs.Crouching] = "rbxassetid://103866147082035", 
 	[MovementStateDefs.CrouchWalking] = "rbxassetid://74749735884197", 
 	[MovementStateDefs.Sliding] = "rbxassetid://122916678970923", 
+	[MovementStateDefs.Jumping] = "rbxassetid://115649888837470",
 }
 
 -- 2. Directional Dash Animations
@@ -56,22 +57,29 @@ function AnimationController.start()
 		local currentRoll = 0
 		local currentPitch = 0
 
-		-- Preload Standard Tracks
+		-- 3. Preload Standard Tracks (With the Jump Looping Fix!)
 		for stateName, animId in pairs(ANIMATION_IDS) do
 			local anim = Instance.new("Animation")
 			anim.AnimationId = animId
 			local track = animator:LoadAnimation(anim)
-			track.Looped = true 
+			
+			-- Only loop tracks that aren't the Jump animation!
+			if stateName == MovementStateDefs.Jumping then
+				track.Looped = false
+			else
+				track.Looped = true 
+			end
+			
 			loadedTracks[stateName] = track
 		end
 		
-		-- Preload Dash Tracks (Ensure these DO NOT loop)
+		-- 4. Preload Dash Tracks (Ensure these DO NOT loop)
 		for dirName, animId in pairs(DASH_ANIMATION_IDS) do
 			local anim = Instance.new("Animation")
 			anim.AnimationId = animId
 			local track = animator:LoadAnimation(anim)
 			track.Looped = false 
-			track.Priority = Enum.AnimationPriority.Action -- Ensure dashes override walking/running
+			track.Priority = Enum.AnimationPriority.Action 
 			loadedDashTracks[dirName] = track
 		end
 
@@ -79,19 +87,27 @@ function AnimationController.start()
 			loadedTracks[fsm.CurrentState]:Play()
 		end
 
-		-- Handle State Transitions (Standard & Directional Dashing)
+		-- 5. Handle State Transitions
+		-- 5. Handle State Transitions
 		fsmConnection = fsm.StateChanged:Connect(function(oldState, newState)
 			
-			-- 1. ALWAYS STOP THE OLD STATE FIRST
+			-- ALWAYS STOP THE OLD STATE FIRST
 			if oldState == MovementStateDefs.Dashing then
 				for _, track in pairs(loadedDashTracks) do
 					if track.IsPlaying then track:Stop(0.2) end
 				end
 			elseif loadedTracks[oldState] then
-				loadedTracks[oldState]:Stop(0.1) 
+				
+				-- THE FIX: Do not instantly stop the Jump animation if we are transitioning into a Fall!
+				-- This allows the jump to blend naturally into the fall animation.
+				if not (oldState == MovementStateDefs.Jumping and newState == MovementStateDefs.Falling) then
+					loadedTracks[oldState]:Stop(0.1) 
+				end
+				
 			end
+            -- ... (The PLAY THE NEW STATE logic stays exactly the same)
 			
-			-- 2. PLAY THE NEW STATE
+			-- PLAY THE NEW STATE
 			if newState == MovementStateDefs.Dashing then
 				local moveDir = humanoid.MoveDirection
 				local trackToPlay = loadedDashTracks.Backward 
@@ -118,14 +134,14 @@ function AnimationController.start()
 				end
 				
 			else
-				-- Play standard animation
+				-- Play standard animation (Walking, Jumping, Falling, Sliding, etc.)
 				if loadedTracks[newState] then
 					loadedTracks[newState]:Play(0.1)
 				end
 			end
 		end)
 		
-		-- Handle Procedural Rig Manipulation (Leaning)
+		-- 6. Handle Procedural Rig Manipulation (Leaning)
 		if rootJoint then
 			renderConnection = RunService.RenderStepped:Connect(function(dt)
 				local moveDir = humanoid.MoveDirection
@@ -153,7 +169,7 @@ function AnimationController.start()
 			end)
 		end
 		
-		-- Unified Garbage Collection
+		-- 7. Unified Garbage Collection
 		humanoid.Died:Once(function()
 			if fsmConnection then fsmConnection:Disconnect() end
 			if renderConnection then renderConnection:Disconnect() end

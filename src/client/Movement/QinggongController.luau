@@ -1,6 +1,7 @@
 -- src/client/Movement/QinggongController.luau
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService") -- ADDED RUNSERVICE
 
 local ClientMovementState = require(script.Parent.ClientMovementState)
 local MovementConstants = require(ReplicatedStorage.Shared.Movement.MovementConstants)
@@ -17,32 +18,23 @@ function QinggongController.start()
 		local humanoid = character:WaitForChild("Humanoid")
 		local hrp = character:WaitForChild("HumanoidRootPart")
 		
-		-- Track active physics constraints so we can clean them up safely
 		local activeDashVelocity = nil
 		local activeDashAttachment = nil
 		local activeTween = nil
+		local steerConnection = nil -- NEW: Track the steering loop
 
 		local function cleanupDash()
-			if activeTween then 
-				activeTween:Cancel() 
-				activeTween = nil 
-			end
-			if activeDashVelocity then 
-				activeDashVelocity:Destroy() 
-				activeDashVelocity = nil 
-			end
-			if activeDashAttachment then 
-				activeDashAttachment:Destroy() 
-				activeDashAttachment = nil 
-			end
+			if activeTween then activeTween:Cancel() activeTween = nil end
+			if steerConnection then steerConnection:Disconnect() steerConnection = nil end
+			if activeDashVelocity then activeDashVelocity:Destroy() activeDashVelocity = nil end
+			if activeDashAttachment then activeDashAttachment:Destroy() activeDashAttachment = nil end
 		end
 
 		fsm.StateChanged:Connect(function(oldState, newState)
 			
 			if newState == MovementStateDefs.Dashing or newState == MovementStateDefs.Sliding then
-				cleanupDash() -- Strip any old constraints
+				cleanupDash() 
 
-				-- Create the Physics Constraints
 				activeDashAttachment = Instance.new("Attachment")
 				activeDashAttachment.Name = "QinggongAttachment"
 				activeDashAttachment.Parent = hrp
@@ -56,51 +48,52 @@ function QinggongController.start()
 				activeDashVelocity.MaxAxesForce = Vector3.new(100000, 0, 100000) 
 				activeDashVelocity.Parent = hrp
 
-				local tweenInfo
-				local targetEndVelocity
-
 				if newState == MovementStateDefs.Dashing then
-					-- DASH LOGIC
+					-- DASH LOGIC (Strictly Linear)
 					local moveVector = humanoid.MoveDirection
 					local dashDirection = moveVector.Magnitude > 0 and moveVector.Unit or -hrp.CFrame.LookVector
 					
 					activeDashVelocity.VectorVelocity = dashDirection * MovementConstants.DashPower
-					targetEndVelocity = dashDirection * MovementConstants.WalkSpeed
+					local targetEndVelocity = dashDirection * MovementConstants.WalkSpeed
 					
-					tweenInfo = TweenInfo.new(MovementConstants.DashDuration, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out)
+					local tweenInfo = TweenInfo.new(MovementConstants.DashDuration, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out)
+					activeTween = TweenService:Create(activeDashVelocity, tweenInfo, { VectorVelocity = targetEndVelocity })
+					activeTween:Play()
 
 				elseif newState == MovementStateDefs.Sliding then
-					-- SLIDE LOGIC (Momentum Based)
-					-- Capture exact velocity at the moment of the slide, ignoring Y (gravity)
+					-- SLIDE LOGIC (Steerable!)
 					local currentMomentum = hrp.AssemblyLinearVelocity * Vector3.new(1, 0, 1)
-					local slideDirection = currentMomentum.Magnitude > 0 and currentMomentum.Unit or hrp.CFrame.LookVector
+					local startSpeed = currentMomentum.Magnitude > 0 and (currentMomentum.Magnitude * MovementConstants.SlideBoostMultiplier) or (MovementConstants.WalkSpeed * MovementConstants.SlideBoostMultiplier)
+					local targetEndSpeed = MovementConstants.CrouchSpeed 
 					
-					-- Give it a kick based on how fast they were going
-					activeDashVelocity.VectorVelocity = slideDirection * (currentMomentum.Magnitude * MovementConstants.SlideBoostMultiplier)
+					-- 1. Create a proxy value for Speed that we can tween
+					local speedValue = Instance.new("NumberValue")
+					speedValue.Value = startSpeed
 					
-					-- Target slowing down to crouch speed
-					targetEndVelocity = slideDirection * MovementConstants.CrouchSpeed 
+					-- 2. Steer mid-slide based on camera/character rotation
+					steerConnection = RunService.RenderStepped:Connect(function()
+						if activeDashVelocity and activeDashVelocity.Parent then
+							local lookDir = hrp.CFrame.LookVector
+							activeDashVelocity.VectorVelocity = lookDir * speedValue.Value
+						end
+					end)
 					
-					-- Quad easing simulates ground friction perfectly (smoother than Exponential)
-					tweenInfo = TweenInfo.new(MovementConstants.SlideFrictionDuration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+					-- 3. Tween the Speed Value, not the vector!
+					local tweenInfo = TweenInfo.new(MovementConstants.SlideFrictionDuration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+					activeTween = TweenService:Create(speedValue, tweenInfo, { Value = targetEndSpeed })
+					
+					activeTween.Completed:Connect(function()
+						speedValue:Destroy()
+					end)
+					activeTween:Play()
 				end
-
-				-- Smooth Deceleration
-				activeTween = TweenService:Create(activeDashVelocity, tweenInfo, {
-					VectorVelocity = targetEndVelocity
-				})
-				activeTween:Play()
 				
 			elseif oldState == MovementStateDefs.Dashing or oldState == MovementStateDefs.Sliding then
-				-- Instantly strip constraints when state changes (e.g., they stand up, dash, or slide ends)
 				cleanupDash()
 			end
 		end)
 		
-		-- Unified Garbage Collection for wipes/deaths
-		humanoid.Died:Once(function()
-			cleanupDash()
-		end)
+		humanoid.Died:Once(cleanupDash)
 	end)
 end
 

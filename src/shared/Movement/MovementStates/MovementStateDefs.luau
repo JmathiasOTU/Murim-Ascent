@@ -8,4 +8,12 @@ return {
 	Sliding = "Sliding", 
 	Jumping = "Jumping",
 	Falling = "Falling",
+
+
+	-- Advanced Movement States (for future use)
+	WallClimbing = "WallClimbing",
+	WallHanging = "WallHanging",
+	WallRunning = "WallRunning",
+	LedgeVaulting = "LedgeVaulting",
+
 }
