@@ -30,26 +30,31 @@ function QinggongController.start()
 			if activeDashAttachment then activeDashAttachment:Destroy() activeDashAttachment = nil end
 		end
 
+		-- Create a local raycast param for the controller to use
+		local parkourRayParams = RaycastParams.new()
+		parkourRayParams.FilterType = Enum.RaycastFilterType.Exclude
+		parkourRayParams.FilterDescendantsInstances = {character}
+
 		fsm.StateChanged:Connect(function(oldState, newState)
 			
+			-- 1. DASHING AND SLIDING PHYSICS
 			if newState == MovementStateDefs.Dashing or newState == MovementStateDefs.Sliding then
 				cleanupDash() 
 
 				activeDashAttachment = Instance.new("Attachment")
-				activeDashAttachment.Name = "QinggongAttachment"
 				activeDashAttachment.Parent = hrp
 
 				activeDashVelocity = Instance.new("LinearVelocity")
-				activeDashVelocity.Name = "QinggongVelocity"
 				activeDashVelocity.Attachment0 = activeDashAttachment
 				activeDashVelocity.RelativeTo = Enum.ActuatorRelativeTo.World
 				activeDashVelocity.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+				
+				-- Let gravity still pull down (Y = 0)
 				activeDashVelocity.ForceLimitMode = Enum.ForceLimitMode.PerAxis
 				activeDashVelocity.MaxAxesForce = Vector3.new(100000, 0, 100000) 
 				activeDashVelocity.Parent = hrp
 
 				if newState == MovementStateDefs.Dashing then
-					-- DASH LOGIC (Strictly Linear)
 					local moveVector = humanoid.MoveDirection
 					local dashDirection = moveVector.Magnitude > 0 and moveVector.Unit or -hrp.CFrame.LookVector
 					
@@ -61,35 +66,73 @@ function QinggongController.start()
 					activeTween:Play()
 
 				elseif newState == MovementStateDefs.Sliding then
-					-- SLIDE LOGIC (Steerable!)
 					local currentMomentum = hrp.AssemblyLinearVelocity * Vector3.new(1, 0, 1)
 					local startSpeed = currentMomentum.Magnitude > 0 and (currentMomentum.Magnitude * MovementConstants.SlideBoostMultiplier) or (MovementConstants.WalkSpeed * MovementConstants.SlideBoostMultiplier)
-					local targetEndSpeed = MovementConstants.CrouchSpeed 
 					
-					-- 1. Create a proxy value for Speed that we can tween
 					local speedValue = Instance.new("NumberValue")
 					speedValue.Value = startSpeed
 					
-					-- 2. Steer mid-slide based on camera/character rotation
 					steerConnection = RunService.RenderStepped:Connect(function()
 						if activeDashVelocity and activeDashVelocity.Parent then
-							local lookDir = hrp.CFrame.LookVector
-							activeDashVelocity.VectorVelocity = lookDir * speedValue.Value
+							activeDashVelocity.VectorVelocity = hrp.CFrame.LookVector * speedValue.Value
 						end
 					end)
 					
-					-- 3. Tween the Speed Value, not the vector!
 					local tweenInfo = TweenInfo.new(MovementConstants.SlideFrictionDuration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-					activeTween = TweenService:Create(speedValue, tweenInfo, { Value = targetEndSpeed })
-					
-					activeTween.Completed:Connect(function()
-						speedValue:Destroy()
-					end)
+					activeTween = TweenService:Create(speedValue, tweenInfo, { Value = MovementConstants.CrouchSpeed })
+					activeTween.Completed:Connect(function() speedValue:Destroy() end)
 					activeTween:Play()
 				end
 				
-			elseif oldState == MovementStateDefs.Dashing or oldState == MovementStateDefs.Sliding then
+			-- 2. WALL CLIMBING & VAULTING PHYSICS
+			elseif newState == MovementStateDefs.WallClimbing or newState == MovementStateDefs.WallHanging or newState == MovementStateDefs.LedgeVaulting then
 				cleanupDash()
+				humanoid.AutoRotate = false -- Stop camera from spinning you off the wall
+				
+				activeDashAttachment = Instance.new("Attachment")
+				activeDashAttachment.Parent = hrp
+
+				activeDashVelocity = Instance.new("LinearVelocity")
+				activeDashVelocity.Attachment0 = activeDashAttachment
+				activeDashVelocity.RelativeTo = Enum.ActuatorRelativeTo.World
+				activeDashVelocity.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+				
+				-- Lock ALL axes to completely defy gravity!
+				activeDashVelocity.ForceLimitMode = Enum.ForceLimitMode.PerAxis
+				activeDashVelocity.MaxAxesForce = Vector3.new(100000, 100000, 100000) 
+				activeDashVelocity.Parent = hrp
+				
+				-- Quick ray to find exactly where the wall is
+				local ray = workspace:Raycast(hrp.CFrame.Position, hrp.CFrame.LookVector * 5, parkourRayParams)
+				local pushIntoWallVector = ray and (-ray.Normal * 4) or (hrp.CFrame.LookVector * 4)
+
+				if newState == MovementStateDefs.WallClimbing then
+					-- Pull them UP, and push them SLIGHTLY forward to hug the wall
+					activeDashVelocity.VectorVelocity = Vector3.new(0, MovementConstants.ClimbSpeed, 0) + pushIntoWallVector
+					
+				elseif newState == MovementStateDefs.WallHanging then
+					-- Kill vertical momentum, just hold them against the wall
+					activeDashVelocity.VectorVelocity = Vector3.new(0, 0, 0) + pushIntoWallVector
+					
+				elseif newState == MovementStateDefs.LedgeVaulting then
+					humanoid.AutoRotate = true -- Allow looking around again during vault
+					
+					-- Explosive diagonal boost (Up and Forward) over the ledge
+					local forwardVector = hrp.CFrame.LookVector * 25
+					local upVector = Vector3.new(0, 30, 0)
+					activeDashVelocity.VectorVelocity = forwardVector + upVector
+					
+					-- Smooth it out via Tween just like a dash!
+					local tweenInfo = TweenInfo.new(MovementConstants.LedgeVaultDuration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+					activeTween = TweenService:Create(activeDashVelocity, tweenInfo, { VectorVelocity = forwardVector * 0.5 })
+					activeTween:Play()
+				end
+
+			-- 3. EXIT CLEANUP
+			else
+				-- If we return to Idle, Falling, Jumping, etc.
+				cleanupDash()
+				humanoid.AutoRotate = true -- Ensure standard controls return
 			end
 		end)
 		

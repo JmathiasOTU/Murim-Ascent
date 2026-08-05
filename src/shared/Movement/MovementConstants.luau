@@ -15,4 +15,8 @@ return {
 
 	SlideBoostMultiplier = 2.8,
 	SlideFrictionDuration = 1.2,
+
+	-- Wall shit
+	ClimbSpeed = 20,
+	LedgeVaultDuration = 0.35,
 }
