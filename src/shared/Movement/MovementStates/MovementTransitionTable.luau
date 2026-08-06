@@ -55,7 +55,6 @@ return {
 	[MovementStateDefs.Jumping] = {
 		[MovementStateDefs.Falling] = true,
 		[MovementStateDefs.Dashing] = true,
-		[MovementStateDefs.WallClimbing] = true,
 		[MovementStateDefs.WallHanging] = true,
 		[MovementStateDefs.WallRunning] = true,
 		[MovementStateDefs.LedgeVaulting] = true, 
@@ -67,7 +66,6 @@ return {
 		[MovementStateDefs.Crouching] = true,      
 		[MovementStateDefs.CrouchWalking] = true,  
 		[MovementStateDefs.Dashing] = true,
-		[MovementStateDefs.WallClimbing] = true,
 		[MovementStateDefs.WallHanging] = true,
 		[MovementStateDefs.WallRunning] = true,
 		[MovementStateDefs.LedgeVaulting] = true,
@@ -93,33 +91,46 @@ return {
 		[MovementStateDefs.CrouchWalking] = true,
 		[MovementStateDefs.Jumping] = true,
 		[MovementStateDefs.Falling] = true,
-		[MovementStateDefs.WallClimbing] = true, 
+		[MovementStateDefs.WallHanging] = true, 
 		[MovementStateDefs.WallRunning] = true,
 	},
 
 	-- ==========================================
 	-- ADVANCED QINGGONG STATES
 	-- ==========================================
-	[MovementStateDefs.WallClimbing] = {
-		[MovementStateDefs.WallHanging] = true,   -- Let go of W to hold still
-		[MovementStateDefs.Jumping] = true,       -- Wall-jump backwards
-		[MovementStateDefs.Falling] = true,       -- Slide off or run out of stamina
-		[MovementStateDefs.LedgeVaulting] = true, -- Reach the top of the wall
-	},
 	[MovementStateDefs.WallHanging] = {
-		[MovementStateDefs.WallClimbing] = true,
+		[MovementStateDefs.WallBoost] = true, 
 		[MovementStateDefs.WallRunning] = true,
-		[MovementStateDefs.Jumping] = true,
+		[MovementStateDefs.Jumping] = true,   
+		[MovementStateDefs.Falling] = true,   
+	},
+	[MovementStateDefs.WallBoost] = {
+		[MovementStateDefs.WallHanging] = true, 
+		[MovementStateDefs.Jumping] = true,     
 		[MovementStateDefs.Falling] = true,
+		[MovementStateDefs.LedgeVaulting] = true, 
 	},
 	[MovementStateDefs.WallRunning] = {
 		[MovementStateDefs.WallHanging] = true,
 		[MovementStateDefs.Jumping] = true,
+		[MovementStateDefs.WallLeaping] = true,
 		[MovementStateDefs.Falling] = true,
-		[MovementStateDefs.Dashing] = true,       -- Wall-run directly into an air-dash
+		[MovementStateDefs.Dashing] = true,       
+		[MovementStateDefs.Idle] = true,
+		[MovementStateDefs.Walking] = true,
+		[MovementStateDefs.Running] = true,
+		[MovementStateDefs.Crouching] = true,
+	},
+	[MovementStateDefs.WallLeaping] = {
+		[MovementStateDefs.Falling] = true,
+		[MovementStateDefs.WallHanging] = true,
+		[MovementStateDefs.WallRunning] = true,
+		[MovementStateDefs.Dashing] = true,
+		[MovementStateDefs.Idle] = true,
+		[MovementStateDefs.Walking] = true,
+		[MovementStateDefs.Running] = true,
 	},
 	[MovementStateDefs.LedgeVaulting] = {
-		-- Once the vault animation finishes, we hand them back to grounded states
 		[MovementStateDefs.Idle] = true,
 		[MovementStateDefs.Walking] = true,
 		[MovementStateDefs.Running] = true,
