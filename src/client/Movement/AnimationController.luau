@@ -100,9 +100,12 @@ function AnimationController.start()
 				track.Looped = true 
 			end
 			
-			-- Force Action priority so one-shot impact tracks layer correctly
-			if stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding then
+			-- Force Priorities to avoid Roblox default script bleeding
+			if stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding or stateName == MovementStateDefs.AirDashing then
 				track.Priority = Enum.AnimationPriority.Action
+			else
+				-- Forces standard movement (Walk/Run/Idle) to dominate Roblox defaults
+				track.Priority = Enum.AnimationPriority.Movement 
 			end
 			
 			loadedTracks[stateName] = track

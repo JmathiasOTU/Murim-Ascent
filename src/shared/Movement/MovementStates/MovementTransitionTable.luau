@@ -193,9 +193,13 @@ return {
 		[MovementStateDefs.Idle] = true,
 		[MovementStateDefs.Walking] = true,
 		[MovementStateDefs.Running] = true,
-		[MovementStateDefs.Crouching] = false,
+		[MovementStateDefs.Crouching] = true,
 		[MovementStateDefs.AirDashing] = true,
-		[MovementStateDefs.CrouchWalking] = false,
-		[MovementStateDefs.Sliding] = false,
+		[MovementStateDefs.CrouchWalking] = true,
+		[MovementStateDefs.Sliding] = true,
+		[MovementStateDefs.Jumping] = true,
+		[MovementStateDefs.Falling] = true,
+		
+
 	},
 }
