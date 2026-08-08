@@ -6,43 +6,38 @@ local MovementConstants = require(ReplicatedStorage.Shared.Movement.MovementCons
 local MovementStateDefs = require(ReplicatedStorage.Shared.Movement.MovementStates.MovementStateDefs)
 
 local MovementController = {}
-local started = false
 
 function MovementController.start()
-	if started then return end
-	started = true
-
-	-- Subscribe to the centralized state manager
 	ClientMovementState.FSMReady:Connect(function(fsm, character)
 		local humanoid = character:WaitForChild("Humanoid")
-		local hrp = character:WaitForChild("HumanoidRootPart") 
 		
-		-- Initialize default walk speed
+		-- 1. Initial configuration when spawning
 		humanoid.WalkSpeed = MovementConstants.WalkSpeed
-
-		-- Listen for state changes to adjust physical movement attributes
+		humanoid.JumpPower = MovementConstants.JumpPower
+		
+		-- 2. Listen to the central FSM to adjust speeds safely
 		fsm.StateChanged:Connect(function(oldState, newState)
-			if newState == MovementStateDefs.Crouching or newState == MovementStateDefs.CrouchWalking then
-				humanoid.WalkSpeed = MovementConstants.CrouchSpeed
-				
-			elseif newState == MovementStateDefs.Running then
+			
+			-- PRESERVE MOMENTUM: Do not alter WalkSpeed while airborne!
+			-- This stops Roblox's physics from applying the brakes when you jump while sprinting.
+			if newState == MovementStateDefs.Jumping or 
+			   newState == MovementStateDefs.Falling or 
+			   newState == MovementStateDefs.DoubleJumping or
+			   newState == MovementStateDefs.WallLeaping then
+				return 
+			end
+
+			-- Grounded Speed Management
+			if newState == MovementStateDefs.Running then
 				humanoid.WalkSpeed = MovementConstants.RunSpeed
 				
-			elseif newState == MovementStateDefs.Idle or newState == MovementStateDefs.Walking then
+			elseif newState == MovementStateDefs.Walking or newState == MovementStateDefs.Idle then
 				humanoid.WalkSpeed = MovementConstants.WalkSpeed
 				
-			-- NEW: DYNAMIC AIRBORNE MOMENTUM (Data-Driven)
-			elseif newState == MovementStateDefs.Jumping or newState == MovementStateDefs.Falling then
-				-- Grab our physical speed, ignoring vertical
-				local flatVelocity = hrp.AssemblyLinearVelocity * Vector3.new(1, 0, 1)
-				local momentumSpeed = flatVelocity.Magnitude
-				
-				-- Pull tuning values from the centralized constants module
-				local calculatedAirSpeed = momentumSpeed * MovementConstants.AirMomentumMultiplier
-				
-				-- Clamp ensures you never go slower than normal WalkSpeed, but never steer faster than MaxAirSteeringSpeed
-				humanoid.WalkSpeed = math.clamp(calculatedAirSpeed, MovementConstants.WalkSpeed, MovementConstants.MaxAirSteeringSpeed)
+			elseif newState == MovementStateDefs.Crouching or newState == MovementStateDefs.CrouchWalking then
+				humanoid.WalkSpeed = MovementConstants.CrouchSpeed
 			end
+			
 		end)
 	end)
 end

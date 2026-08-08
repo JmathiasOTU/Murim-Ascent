@@ -35,6 +35,7 @@ function QinggongController.start()
 		end
 
 		fsm.StateChanged:Connect(function(oldState, newState)
+		
 			
 			-- 1. DASHING AND SLIDING PHYSICS
 			if newState == MovementStateDefs.Dashing or newState == MovementStateDefs.Sliding then
@@ -201,8 +202,108 @@ function QinggongController.start()
 						activeDashVelocity = nil
 					end
 				end)
+				-- 3.5 AIR DASHING (One-shot momentum burst)
+			elseif newState == MovementStateDefs.AirDashing then
+				cleanupDash()
+				humanoid.AutoRotate = true 
+				
+				-- Camera pitch for vertical angle (uses current camera)
+				local camPitch = workspace.CurrentCamera.CFrame.LookVector.Y
+				local flatLook = hrp.CFrame.LookVector * Vector3.new(1, 0, 1)
+				
+				-- Protect against NaN vectors if looking completely vertically
+				local flatForward = if flatLook.Magnitude > 0.001 then flatLook.Unit else hrp.CFrame.LookVector
+				
+				-- Calculate the velocity
+				local forwardVel = flatForward * MovementConstants.AirDashSpeed
+				local upVel = Vector3.new(0, camPitch * MovementConstants.AirDashSpeed * MovementConstants.AirDashVerticalMult, 0)
+				local launchVel = forwardVel + upVel
+				
+				-- Soften wall impact to prevent dead-stopping on walls
+				local wallHit = workspace:Raycast(hrp.CFrame.Position, hrp.CFrame.LookVector * MovementConstants.AirDashWallSoftenRange, parkourRayParams)
+				if wallHit then
+					local intoWall = launchVel:Dot(wallHit.Normal)
+					if intoWall < 0 then
+						launchVel = launchVel - (wallHit.Normal * intoWall)
+					end
+				end
+
+				-- Apply pure velocity instead of constraints (lets you arc downwards naturally)
+				hrp.AssemblyLinearVelocity = launchVel
 
 
+
+				-- 3.7 LEDGE JUMPING (Slide Jump Boost)
+			elseif newState == MovementStateDefs.LedgeJumping then
+				cleanupDash()
+				humanoid.AutoRotate = true 
+
+				-- Flatten the look vector to prevent upwards pitching
+				local flatLook = hrp.CFrame.LookVector * Vector3.new(1, 0, 1)
+				local flatForward = if flatLook.Magnitude > 0.001 then flatLook.Unit else hrp.CFrame.LookVector
+
+				-- Explosive up + forward launch
+				local launchVel = (flatForward * MovementConstants.LedgeJumpForwardPower) + Vector3.new(0, MovementConstants.LedgeJumpUpPower, 0)
+				
+				-- Override velocity (Normal Roblox freefall automatically takes over)
+				hrp.AssemblyLinearVelocity = launchVel
+
+			elseif newState == MovementStateDefs.DoubleJumping then
+				cleanupDash()
+				humanoid.AutoRotate = true
+
+				-- Preserve horizontal momentum and refresh only vertical burst.
+				local currentVel = hrp.AssemblyLinearVelocity
+				hrp.AssemblyLinearVelocity = Vector3.new(currentVel.X, MovementConstants.DoubleJumpVelocity, currentVel.Z)
+
+
+				
+				elseif newState == MovementStateDefs.HeavyLanding then
+			cleanupDash()
+			humanoid.AutoRotate = true 
+
+			-- 1. CALCULATE HORIZONTAL MOMENTUM
+			-- We zero out the Y axis so falling 1000 studs down doesn't turn into forward speed!
+			local currentVelocity = hrp.AssemblyLinearVelocity
+			local horizontalVelocity = Vector3.new(currentVelocity.X, 0, currentVelocity.Z)
+			local conservedSpeed = horizontalVelocity.Magnitude
+
+			-- 2. CLAMP THE SPEED
+			-- If they fell straight down, conservedSpeed is 0, so it defaults to MinSpeed (15).
+			-- If they wall-leaped, conservedSpeed might be 50, which carries over perfectly!
+			local rollSpeed = math.clamp(conservedSpeed, MovementConstants.HeavyLandMinSpeed, MovementConstants.HeavyLandMaxSpeed)
+
+			activeDashAttachment = Instance.new("Attachment")
+			activeDashAttachment.Parent = hrp
+
+			activeDashVelocity = Instance.new("LinearVelocity")
+			activeDashVelocity.Attachment0 = activeDashAttachment
+			activeDashVelocity.RelativeTo = Enum.ActuatorRelativeTo.World
+			activeDashVelocity.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+			activeDashVelocity.ForceLimitMode = Enum.ForceLimitMode.PerAxis
+			activeDashVelocity.MaxAxesForce = Vector3.new(math.huge, 0, math.huge) 
+			activeDashVelocity.Parent = hrp
+
+			local speedValue = Instance.new("NumberValue")
+			speedValue.Value = rollSpeed -- START AT CONSERVED MOMENTUM
+
+			steerConnection = RunService.RenderStepped:Connect(function()
+				if activeDashVelocity and activeDashVelocity.Parent then
+					local moveDir = humanoid.MoveDirection
+					local rollDir = moveDir.Magnitude > 0.05 and moveDir or hrp.CFrame.LookVector
+					
+					activeDashVelocity.VectorVelocity = rollDir * speedValue.Value
+				end
+			end)
+
+			-- 3. SMOOTHLY DECELERATE BACK TO WALK SPEED
+			local tweenInfo = TweenInfo.new(MovementConstants.HeavyLandDuration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+			activeTween = TweenService:Create(speedValue, tweenInfo, { Value = MovementConstants.WalkSpeed })
+			
+			activeTween.Completed:Connect(function()
+				speedValue:Destroy()
+			end)
+			activeTween:Play()
 			-- 4. LEDGE VAULTING
 			elseif newState == MovementStateDefs.LedgeVaulting then
 				cleanupDash()

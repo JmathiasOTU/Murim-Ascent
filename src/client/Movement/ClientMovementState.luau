@@ -44,6 +44,8 @@ function ClientMovementState.start()
 		local isRunningHeld = false
 		local wasMoving = false
 		local lastDashTime = 0
+		local fallStartTime = tick() -- Tracker for falling duration
+		local hasDoubleJumped = false
 
 		-- Parkour Raycast Setup
 		local parkourRayParams = RaycastParams.new()
@@ -95,13 +97,14 @@ function ClientMovementState.start()
 			end
 			return false
 		end
--- 2. Centralized State Evaluator (Prediction Engine)
+
+		-- 2. Centralized State Evaluator (Prediction Engine)
 		local function evaluateState(forceExitAction)
-			-- THE FIX: Ensure WallRunning is in this whitelist!
-			if not forceExitAction and (fsm.CurrentState == MovementStateDefs.Dashing or fsm.CurrentState == MovementStateDefs.Sliding or fsm.CurrentState == MovementStateDefs.LedgeVaulting or fsm.CurrentState == MovementStateDefs.WallBoost or fsm.CurrentState == MovementStateDefs.WallRunning or fsm.CurrentState == MovementStateDefs.WallLeaping) then return end
+			-- THE FIX: Ensure wall, impact action, and Heavy Landing states are in this whitelist!
+			if not forceExitAction and (fsm.CurrentState == MovementStateDefs.Dashing or fsm.CurrentState == MovementStateDefs.Sliding or fsm.CurrentState == MovementStateDefs.LedgeVaulting or fsm.CurrentState == MovementStateDefs.WallBoost or fsm.CurrentState == MovementStateDefs.WallRunning or fsm.CurrentState == MovementStateDefs.WallLeaping or fsm.CurrentState == MovementStateDefs.HeavyLanding) then return end
 			
 			-- Do not calculate grounded states if airborne, UNLESS we just landed (forced)!
-			if not forceExitAction and (fsm.CurrentState == MovementStateDefs.Jumping or fsm.CurrentState == MovementStateDefs.Falling) then return end
+			if not forceExitAction and (fsm.CurrentState == MovementStateDefs.Jumping or fsm.CurrentState == MovementStateDefs.DoubleJumping or fsm.CurrentState == MovementStateDefs.Falling) then return end
 			
 			-- ... (rest of the function stays the same) ...
 
@@ -136,11 +139,18 @@ function ClientMovementState.start()
 				
 			-- 1. Vault Detection
 			if state == MovementStateDefs.WallHanging or state == MovementStateDefs.WallBoost then
-				local rayOrigin = hrp.CFrame.Position - Vector3.new(0, 1, 0)
-				local rayDirection = hrp.CFrame.LookVector * 3
-				local hitResult = workspace:Raycast(rayOrigin, rayDirection, parkourRayParams)
 				
-				if not hitResult then
+				-- Shoot one ray from the head/shoulders, and one from the legs/waist
+				local headRayOrigin = hrp.CFrame.Position + Vector3.new(0, 1.5, 0)
+				local lowerRayOrigin = hrp.CFrame.Position - Vector3.new(0, 1, 0)
+				
+				local rayDirection = hrp.CFrame.LookVector * 3
+				
+				local headHit = workspace:Raycast(headRayOrigin, rayDirection, parkourRayParams)
+				local lowerHit = workspace:Raycast(lowerRayOrigin, rayDirection, parkourRayParams)
+				
+				-- If our head is clear of the wall, but our lower body still detects it, Vault!
+				if not headHit and lowerHit then
 					local success = fsm:transition(MovementStateDefs.LedgeVaulting)
 					if success then
 						MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.LedgeVaulting })
@@ -151,13 +161,12 @@ function ClientMovementState.start()
 				end
 				
 			-- 2. Wallrun Exit Condition (Floor impact, letting go of W, or wall ending)
-			-- 2. Wallrun Exit Condition (Floor impact or wall ending)
 			elseif state == MovementStateDefs.WallRunning then
 				local rightRay = workspace:Raycast(hrp.CFrame.Position, hrp.CFrame.RightVector * 3.5, parkourRayParams)
 				local leftRay = workspace:Raycast(hrp.CFrame.Position, -hrp.CFrame.RightVector * 3.5, parkourRayParams)
 				local floorRay = workspace:Raycast(hrp.CFrame.Position, Vector3.new(0, -3.2, 0), parkourRayParams)
 				
-				-- THE FIX: Removed the MoveDirection check. They only fall if they run out of wall or hit the floor!
+				-- They only fall if they run out of wall or hit the floor!
 				if (not rightRay and not leftRay) or floorRay then
 					evaluateState(true) -- Fall off or return to running
 				end
@@ -195,7 +204,18 @@ function ClientMovementState.start()
 				isCrouchToggled = false 
 				
 				if fsm.CurrentState == MovementStateDefs.Sliding then
-					fsm:transition(MovementStateDefs.Jumping) 
+					-- Projected Raycast to find the ledge
+					local forwardProjection = hrp.CFrame.Position + (hrp.CFrame.LookVector * MovementConstants.LedgeJumpEdgeCheckForward)
+					local downRay = workspace:Raycast(forwardProjection, Vector3.new(0, -MovementConstants.LedgeJumpEdgeCheckDown, 0), parkourRayParams)
+					
+					-- If there is NO floor ahead of us, it's a ledge jump!
+					local targetState = if not downRay then MovementStateDefs.LedgeJumping else MovementStateDefs.Jumping
+					
+					local success = fsm:transition(targetState)
+					if success then
+						MovementIntent:FireServer("UpdateState", { targetState = targetState })
+					end
+					return -- Prevent standard jump evaluation
 				end
 
 				-- Standard Jump
@@ -207,11 +227,35 @@ function ClientMovementState.start()
 			elseif newState == Enum.HumanoidStateType.Freefall then
 				local success = fsm:transition(MovementStateDefs.Falling)
 				if success then
+					fallStartTime = tick() -- START THE FALL TIMER
 					MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Falling })
 				end
 				
 			elseif newState == Enum.HumanoidStateType.Landed then
-				evaluateState(true) 
+				hasDoubleJumped = false -- RESET DOUBLE JUMP
+				local fallDuration = tick() - fallStartTime
+				
+				-- Determine which landing to use
+				local targetState = MovementStateDefs.LightLanding
+				local duration = MovementConstants.LightLandDuration
+				
+				if fallDuration >= MovementConstants.HeavyFallTimeThreshold then
+					targetState = MovementStateDefs.HeavyLanding
+					duration = MovementConstants.HeavyLandDuration
+				end
+				
+				local success = fsm:transition(targetState)
+				if success then
+					MovementIntent:FireServer("UpdateState", { targetState = targetState })
+					
+					task.delay(duration, function()
+						if fsm.CurrentState == targetState then
+							evaluateState(true) -- Force exit back to normal movement
+						end
+					end)
+				else
+					evaluateState(true) -- Fallback if transition fails
+				end
 			end
 		end)
 
@@ -267,6 +311,7 @@ function ClientMovementState.start()
 					if checkWallRun() then
 						local success = fsm:transition(MovementStateDefs.WallRunning)
 						if success then
+							hasDoubleJumped = false -- Reset double jump on wallrun
 							MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.WallRunning })
 							
 							task.delay(MovementConstants.WallRunDuration, function()
@@ -280,8 +325,28 @@ function ClientMovementState.start()
 					if checkWallCling() then
 						local success = fsm:transition(MovementStateDefs.WallHanging)
 						if success then
+							hasDoubleJumped = false -- Reset double jump on wall cling
 							MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.WallHanging })
 							return Enum.ContextActionResult.Sink 
+						end
+					end
+
+					-- Double jump fallback when no wall interaction is available
+					if not hasDoubleJumped then
+						local success = fsm:transition(MovementStateDefs.DoubleJumping)
+						if success then
+							hasDoubleJumped = true
+							MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.DoubleJumping })
+
+							task.delay(0.35, function()
+								if fsm.CurrentState == MovementStateDefs.DoubleJumping then
+									local fallSuccess = fsm:transition(MovementStateDefs.Falling)
+									if fallSuccess then
+										MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Falling })
+									end
+								end
+							end)
+							return Enum.ContextActionResult.Sink
 						end
 					end
 				end
@@ -342,7 +407,31 @@ function ClientMovementState.start()
 		ContextActionService:BindAction("TriggerDash", function(actionName, inputState, inputObject)
 			if inputState == Enum.UserInputState.Begin then
 				local now = tick()
-				if MovementValidationUtils.canDash(lastDashTime, now) and MovementValidationUtils.isLegalDashState(fsm.CurrentState, MovementTransitionTable) then
+				
+				-- Branch 1: AIR DASHING (If we are in the air)
+				if fsm.CurrentState == MovementStateDefs.Jumping or fsm.CurrentState == MovementStateDefs.Falling then
+					if MovementValidationUtils.canDash(lastDashTime, now) then
+						local success = fsm:transition(MovementStateDefs.AirDashing)
+						if success then
+							lastDashTime = now
+							
+							-- Tell the server we are air dashing
+							MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.AirDashing })
+							
+							-- THE FIX: Explicitly transition back to Falling, do NOT evaluateState!
+							task.delay(MovementConstants.DashDuration, function()
+								if fsm.CurrentState == MovementStateDefs.AirDashing then
+									local fallSuccess = fsm:transition(MovementStateDefs.Falling)
+									if fallSuccess then
+										MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Falling })
+									end
+								end
+							end)
+						end
+					end
+					
+				-- Branch 2: GROUND DASHING (Standard)
+				elseif MovementValidationUtils.canDash(lastDashTime, now) and MovementValidationUtils.isLegalDashState(fsm.CurrentState, MovementTransitionTable) then
 					local success = fsm:transition(MovementStateDefs.Dashing)
 					if success then
 						lastDashTime = now
@@ -358,7 +447,7 @@ function ClientMovementState.start()
 			end
 			return Enum.ContextActionResult.Pass
 		end, false, Enum.KeyCode.Q)
-
+		
 		-- 10. Cleanup memory leaks when character dies
 		humanoid.Died:Once(function()
 			renderConn:Disconnect()

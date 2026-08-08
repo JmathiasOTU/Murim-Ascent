@@ -17,19 +17,23 @@ local ANIMATION_IDS = {
 	[MovementStateDefs.CrouchWalking] = "rbxassetid://74749735884197", 
 	[MovementStateDefs.Sliding] = "rbxassetid://122916678970923", 
 	[MovementStateDefs.Jumping] = "rbxassetid://115649888837470",
+	[MovementStateDefs.AirDashing] = "rbxassetid://98118360762129", 
+	[MovementStateDefs.Falling] = "rbxassetid://96469704439785",
 
 	[MovementStateDefs.WallHanging] = "rbxassetid://132023512277724", 
-	[MovementStateDefs.WallBoost] = "rbxassetid://113152742747545",   
+	[MovementStateDefs.WallBoost] = "rbxassetid://113152742747545",
+	[MovementStateDefs.LedgeJumping] = "rbxassetid://137786735677269",
+	[MovementStateDefs.LightLanding] = "rbxassetid://133945243946271", 
+	[MovementStateDefs.HeavyLanding] = "rbxassetid://105831901844953",
 	
-
-
-
-
+	
 	WallLatch = "rbxassetid://115846143777391",
-	WallRunLeft = "rbxassetid://104985993049629",  -- ADD LEFT ID
-	WallRunRight = "rbxassetid://120872562975564", -- ADD RIGHT ID
+	WallRunLeft = "rbxassetid://104985993049629",
+	WallRunRight = "rbxassetid://120872562975564",
 	WallLeapRight = "rbxassetid://95205600216531",  
 	WallLeapLeft = "rbxassetid://92795763809886",
+	DoubleJump1 = "rbxassetid://105731615843957",
+	DoubleJump2 = "rbxassetid://109908788558574",
 }
 
 -- 2. Directional Dash Animations
@@ -40,7 +44,12 @@ local DASH_ANIMATION_IDS = {
 	DashRight = "rbxassetid://109325396920599",
 }
 
-
+-- 2.5 Randomized Vault Animations
+local VAULT_ANIMATION_IDS = {
+	"rbxassetid://127078260749232",
+	"rbxassetid://123684821724041",
+	"rbxassetid://118680114427783",
+}
 
 -- Lean Constants
 local MAX_LEAN_STRAFE = math.rad(12)
@@ -62,8 +71,14 @@ function AnimationController.start()
 		local hrp = character:WaitForChild("HumanoidRootPart")
 		local rootJoint = getRootJoint(character)
 		
+		-- Setup RaycastParams to ignore the player's body
+		local rayParams = RaycastParams.new()
+		rayParams.FilterType = Enum.RaycastFilterType.Exclude
+		rayParams.FilterDescendantsInstances = {character}
+		
 		local loadedTracks = {}
 		local loadedDashTracks = {}
+		local loadedVaultTracks = {} 
 		
 		local fsmConnection = nil
 		local renderConnection = nil
@@ -72,19 +87,22 @@ function AnimationController.start()
 		local currentRoll = 0
 		local currentPitch = 0
 
-		
 		-- 3. Preload Standard Tracks
 		for stateName, animId in pairs(ANIMATION_IDS) do
 			local anim = Instance.new("Animation")
 			anim.AnimationId = animId
 			local track = animator:LoadAnimation(anim)
 			
-			-- Only loop tracks that aren't jumps, boosts, or impacts!
-			-- Only loop tracks that aren't jumps, boosts, or impacts!
-			if stateName == MovementStateDefs.Jumping or stateName == MovementStateDefs.WallBoost or stateName == "WallLatch" or stateName == "WallLeapLeft" or stateName == "WallLeapRight" then
+			-- Only loop tracks that aren't jumps, boosts, impacts, or air dashes!
+			if stateName == MovementStateDefs.Jumping or stateName == "DoubleJump1" or stateName == "DoubleJump2" or stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.AirDashing or stateName == MovementStateDefs.WallBoost or stateName == "WallLatch" or stateName == "WallLeapLeft" or stateName == "WallLeapRight" or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding then
 				track.Looped = false
 			else
 				track.Looped = true 
+			end
+			
+			-- Force Action priority so one-shot impact tracks layer correctly
+			if stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding then
+				track.Priority = Enum.AnimationPriority.Action
 			end
 			
 			loadedTracks[stateName] = track
@@ -104,7 +122,15 @@ function AnimationController.start()
 			loadedTracks[fsm.CurrentState]:Play()
 		end
 
-		
+		for _, animId in ipairs(VAULT_ANIMATION_IDS) do
+			local anim = Instance.new("Animation")
+			anim.AnimationId = animId
+			local track = animator:LoadAnimation(anim)
+			track.Looped = false 
+			track.Priority = Enum.AnimationPriority.Action 
+			table.insert(loadedVaultTracks, track)
+		end
+
 		-- 5. Handle State Transitions
 		fsmConnection = fsm.StateChanged:Connect(function(oldState, newState)
 			
@@ -114,8 +140,8 @@ function AnimationController.start()
 					if track.IsPlaying then track:Stop(0.2) end
 				end
 			elseif loadedTracks[oldState] then
-				-- Do not instantly stop the Jump animation if transitioning into a Fall
-				if not (oldState == MovementStateDefs.Jumping and newState == MovementStateDefs.Falling) then
+				-- Do not instantly stop the Jump or LedgeJump animation if transitioning into a Fall
+				if not ((oldState == MovementStateDefs.Jumping or oldState == MovementStateDefs.LedgeJumping) and newState == MovementStateDefs.Falling) then
 					loadedTracks[oldState]:Stop(0.1) 
 				end
 			end
@@ -162,24 +188,39 @@ function AnimationController.start()
 				end
 				
 			elseif newState == MovementStateDefs.WallRunning then
-				-- Dynamically check which side the wall is on
-				local rightRay = workspace:Raycast(hrp.CFrame.Position, hrp.CFrame.RightVector * 3.5)
+				-- Dynamically check which side the wall is on with RaycastParams
+				local rightRay = workspace:Raycast(hrp.CFrame.Position, hrp.CFrame.RightVector * 3.5, rayParams)
 				if rightRay then
 					if loadedTracks.WallRunRight then loadedTracks.WallRunRight:Play(0.1) end
 				else
 					if loadedTracks.WallRunLeft then loadedTracks.WallRunLeft:Play(0.1) end
 				end
+
 			elseif newState == MovementStateDefs.WallLeaping then
-				-- Dynamically check which side the wall WAS on
-				local rightRay = workspace:Raycast(hrp.CFrame.Position, hrp.CFrame.RightVector * 5)
+				-- Dynamically check which side the wall WAS on with RaycastParams
+				local rightRay = workspace:Raycast(hrp.CFrame.Position, hrp.CFrame.RightVector * 5, rayParams)
 				if rightRay then
 					if loadedTracks.WallLeapRight then loadedTracks.WallLeapRight:Play(0.05) end
 				else
 					if loadedTracks.WallLeapLeft then loadedTracks.WallLeapLeft:Play(0.05) end
 				end
 				
+			-- BLOCK FOR RANDOMIZED VAULTING
+			elseif newState == MovementStateDefs.LedgeVaulting then
+				if #loadedVaultTracks > 0 then
+					local randomIndex = math.random(1, #loadedVaultTracks)
+					loadedVaultTracks[randomIndex]:Play(0.1)
+				end
+
+			elseif newState == MovementStateDefs.DoubleJumping then
+				local trackName = math.random(1, 2) == 1 and "DoubleJump1" or "DoubleJump2"
+				local track = loadedTracks[trackName]
+				if track then
+					track:Play(0.1)
+				end
+				
 			else
-				-- Play standard animation (Walking, Jumping, Falling, WallBoost, Sliding, LedgeVaulting, etc.)
+				-- Play standard animation (Walking, Jumping, Falling, AirDashing, WallBoost, Sliding, etc.)
 				if loadedTracks[newState] then
 					loadedTracks[newState]:Play(0.1)
 				end
@@ -192,6 +233,7 @@ function AnimationController.start()
 				local moveDir = humanoid.MoveDirection
 				local targetRoll, targetPitch = 0, 0
 
+				-- 1. Reset if not moving
 				if moveDir.Magnitude < 0.05 and math.abs(currentRoll) < 0.001 and math.abs(currentPitch) < 0.001 then
 					if currentRoll ~= 0 or currentPitch ~= 0 then
 						currentRoll, currentPitch = 0, 0
@@ -200,12 +242,20 @@ function AnimationController.start()
 					return 
 				end
 
+				-- 2. THE FIX: Only calculate lean if we are NOT on a wall
 				if moveDir.Magnitude > 0.05 then
-					local localDir = hrp.CFrame:VectorToObjectSpace(moveDir)
-					targetRoll = -localDir.X * MAX_LEAN_STRAFE
-					targetPitch = -localDir.Z * MAX_LEAN_FORWARD
+					if fsm.CurrentState == MovementStateDefs.WallRunning or fsm.CurrentState == MovementStateDefs.WallHanging then
+						-- Force upright posture so the wall-run animation stays flat against the surface
+						targetRoll, targetPitch = 0, 0
+					else
+						-- Standard Ground Leaning
+						local localDir = hrp.CFrame:VectorToObjectSpace(moveDir)
+						targetRoll = -localDir.X * MAX_LEAN_STRAFE
+						targetPitch = -localDir.Z * MAX_LEAN_FORWARD
+					end
 				end
 
+				-- Apply smoothing and set the C0
 				local alpha = 1 - math.exp(-LEAN_SPEED * dt)
 				currentRoll = currentRoll + (targetRoll - currentRoll) * alpha
 				currentPitch = currentPitch + (targetPitch - currentPitch) * alpha
@@ -224,6 +274,11 @@ function AnimationController.start()
 				track:Destroy()
 			end
 			for _, track in pairs(loadedDashTracks) do
+				track:Stop()
+				track:Destroy()
+			end
+			-- Clean up the vault tracks
+			for _, track in ipairs(loadedVaultTracks) do
 				track:Stop()
 				track:Destroy()
 			end

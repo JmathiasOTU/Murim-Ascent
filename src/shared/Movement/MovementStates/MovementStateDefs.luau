@@ -1,4 +1,3 @@
--- src/shared/Movement/MovementStates/MovementStateDefs.luau
 return {
 	Idle = "Idle",
 	Walking = "Walking",
@@ -8,7 +7,9 @@ return {
 	Dashing = "Dashing",
 	Sliding = "Sliding",
 	Jumping = "Jumping",
+	DoubleJumping = "DoubleJumping",
 	Falling = "Falling",
+	AirDashing = "AirDashing", 
 	
 	-- ADVANCED QINGGONG STATES
 	WallHanging = "WallHanging",
@@ -16,4 +17,7 @@ return {
 	WallRunning = "WallRunning",
 	LedgeVaulting = "LedgeVaulting",
 	WallLeaping = "WallLeaping",
+	LedgeJumping = "LedgeJumping",
+	LightLanding = "LightLanding",
+	HeavyLanding = "HeavyLanding",
 }
