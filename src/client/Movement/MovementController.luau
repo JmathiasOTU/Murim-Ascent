@@ -15,7 +15,7 @@ function MovementController.start()
 		
 		fsm.StateChanged:Connect(function(oldState, newState)
 			
-			-- PRESERVE MOMENTUM
+			
 			if newState == MovementStateDefs.Jumping or 
 			   newState == MovementStateDefs.Falling or 
 			   newState == MovementStateDefs.DoubleJumping or
@@ -23,7 +23,7 @@ function MovementController.start()
 				return 
 			end
 
-			-- [NEW] Centralized Grounded Speed Management
+
 			local targetSpeed = MovementConstants.getSpeedForState(newState, MovementStateDefs)
 			if targetSpeed then
 				humanoid.WalkSpeed = targetSpeed

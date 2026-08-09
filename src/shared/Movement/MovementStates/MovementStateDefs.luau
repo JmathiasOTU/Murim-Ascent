@@ -2,6 +2,9 @@ return {
 	Idle = "Idle",
 	Walking = "Walking",
 	Running = "Running",
+	Sprinting = "Sprinting",
+	Flashstepping = "Flashstepping",
+	FlashstepRecovery = "FlashstepRecovery",
 	Crouching = "Crouching",
 	CrouchWalking = "CrouchWalking",
 	Dashing = "Dashing",
@@ -9,6 +12,7 @@ return {
 	Jumping = "Jumping",
 	DoubleJumping = "DoubleJumping",
 	Falling = "Falling",
+	MomentumFalling = "MomentumFalling",
 	AirDashing = "AirDashing", 
 	
 	-- ADVANCED QINGGONG STATES
@@ -16,6 +20,10 @@ return {
 	WallBoost = "WallBoost", 
 	WallRunning = "WallRunning",
 	LedgeVaulting = "LedgeVaulting",
+	TreeVaulting = "TreeVaulting",
+	TreeIdle = "TreeIdle",
+	DragonAscentCharging = "DragonAscentCharging",
+	DragonAscentLaunching = "DragonAscentLaunching",
 	WallLeaping = "WallLeaping",
 	LedgeJumping = "LedgeJumping",
 	LightLanding = "LightLanding",

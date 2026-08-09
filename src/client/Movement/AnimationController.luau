@@ -1,5 +1,5 @@
 -- src/client/Movement/AnimationController.luau
-local Players = game:GetService("Players")
+local _Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -13,18 +13,25 @@ local ANIMATION_IDS = {
 	[MovementStateDefs.Idle] = "rbxassetid://100161560231153", 
 	[MovementStateDefs.Walking] = "rbxassetid://71563071935374",
 	[MovementStateDefs.Running] = "rbxassetid://88091162849923", 
+	[MovementStateDefs.Sprinting] = "rbxassetid://115737519957403", -- [QINGGONG] Sprinting animation (replace with dedicated Qinggong sprint ID)
+	--[MovementStateDefs.Flashstepping] = "rbxassetid://YOUR_FLASHSTEP_ID_HERE", -- [QINGGONG] Flashstep animation
+	[MovementStateDefs.FlashstepRecovery] = "rbxassetid://110003377451179", -- [QINGGONG] Flashstep recovery pose (replace with dedicated pose ID)
 	[MovementStateDefs.Crouching] = "rbxassetid://103866147082035", 
 	[MovementStateDefs.CrouchWalking] = "rbxassetid://74749735884197", 
 	[MovementStateDefs.Sliding] = "rbxassetid://122916678970923", 
 	[MovementStateDefs.Jumping] = "rbxassetid://115649888837470",
-	[MovementStateDefs.AirDashing] = "rbxassetid://98118360762129", 
+	[MovementStateDefs.AirDashing] = "rbxassetid://98118360762129",
 	[MovementStateDefs.Falling] = "rbxassetid://96469704439785",
+	[MovementStateDefs.MomentumFalling] = "rbxassetid://96469704439785", -- reuses the Falling pose for the physics-driven momentum fall
 
 	[MovementStateDefs.WallHanging] = "rbxassetid://132023512277724", 
 	[MovementStateDefs.WallBoost] = "rbxassetid://113152742747545",
 	[MovementStateDefs.LedgeJumping] = "rbxassetid://137786735677269",
-	[MovementStateDefs.LightLanding] = "rbxassetid://133945243946271", 
+	-- [MovementStateDefs.TreeVaulting] = "rbxassetid://YOUR_VAULT_ANIM_ID_HERE", -- [QINGGONG] Treetop vault animation
+	[MovementStateDefs.LightLanding] = "rbxassetid://133945243946271",
 	[MovementStateDefs.HeavyLanding] = "rbxassetid://105831901844953",
+	-- [MovementStateDefs.DragonAscentCharging] = "rbxassetid://YOUR_DRAGON_ASCENT_CHARGE_ID_HERE", -- [QINGGONG] Dragon Ascent windup pose
+	-- [MovementStateDefs.DragonAscentLaunching] = "rbxassetid://YOUR_DRAGON_ASCENT_LAUNCH_ID_HERE", -- [QINGGONG] Dragon Ascent launch burst
 	
 	
 	WallLatch = "rbxassetid://115846143777391",
@@ -94,14 +101,14 @@ function AnimationController.start()
 			local track = animator:LoadAnimation(anim)
 			
 			-- Only loop tracks that aren't jumps, boosts, impacts, or air dashes!
-			if stateName == MovementStateDefs.Jumping or stateName == "DoubleJump1" or stateName == "DoubleJump2" or stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.AirDashing or stateName == MovementStateDefs.WallBoost or stateName == "WallLatch" or stateName == "WallLeapLeft" or stateName == "WallLeapRight" or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding then
+			if stateName == MovementStateDefs.Jumping or stateName == "DoubleJump1" or stateName == "DoubleJump2" or stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.AirDashing or stateName == MovementStateDefs.WallBoost or stateName == "WallLatch" or stateName == "WallLeapLeft" or stateName == "WallLeapRight" or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding or stateName == MovementStateDefs.Flashstepping or stateName == MovementStateDefs.FlashstepRecovery or stateName == MovementStateDefs.DragonAscentCharging or stateName == MovementStateDefs.DragonAscentLaunching then
 				track.Looped = false
 			else
 				track.Looped = true 
 			end
 			
 			-- Force Priorities to avoid Roblox default script bleeding
-			if stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding or stateName == MovementStateDefs.AirDashing then
+			if stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding or stateName == MovementStateDefs.AirDashing or stateName == MovementStateDefs.Flashstepping or stateName == MovementStateDefs.FlashstepRecovery or stateName == MovementStateDefs.DragonAscentCharging or stateName == MovementStateDefs.DragonAscentLaunching then
 				track.Priority = Enum.AnimationPriority.Action
 			else
 				-- Forces standard movement (Walk/Run/Idle) to dominate Roblox defaults

@@ -3,6 +3,7 @@ local Players = game:GetService("Players")
 local ContextActionService = game:GetService("ContextActionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local CollectionService = game:GetService("CollectionService")
 
 -- Shared Architecture Dependencies
 local LemonSignal = require(ReplicatedStorage.Shared.StateMachine.LemonSignal)
@@ -18,6 +19,49 @@ local ClientMovementState = {}
 ClientMovementState.FSMReady = LemonSignal.new()
 ClientMovementState.CurrentFSM = nil
 
+local TREE_VAULT_CONE_DOT = math.cos(math.rad(MovementConstants.TreeVaultDetectionConeHalfAngle))
+
+-- Scans invisible "TreeVaultNode"-tagged parts for the best vault target in front of the camera
+local function getBestVaultNode(hrp)
+	local bestNode, bestScore = nil, -math.huge
+	local hrpPos = hrp.Position
+	local lookDir = workspace.CurrentCamera.CFrame.LookVector
+
+	for _, node in CollectionService:GetTagged("TreeVaultNode") do
+		local dirToNode = node.Position - hrpPos
+		local distance = dirToNode.Magnitude
+		if distance <= MovementConstants.TreeVaultRange and distance > 0 then
+			local dot = lookDir:Dot(dirToNode.Unit)
+			if dot > TREE_VAULT_CONE_DOT then
+				local score = dot - (distance / MovementConstants.TreeVaultRange)
+				if score > bestScore then
+					bestScore, bestNode = score, node
+				end
+			end
+		end
+	end
+	return bestNode
+end
+
+-- Single source of truth for "can a vault legally start from here" — reads the transition
+-- table directly instead of hand-maintaining a second whitelist that could drift from it
+local function isVaultEligible(fsm, isQinggongActive)
+	if not isQinggongActive then return false end
+	local validTransitions = MovementTransitionTable[fsm.CurrentState]
+	return validTransitions and validTransitions[MovementStateDefs.TreeVaulting] or false
+end
+
+-- Same pattern as isVaultEligible — the grounded whitelist lives only in
+-- MovementTransitionTable, so this never has to be hand-kept in sync with it
+local function isDragonAscentEligible(fsm, isQinggongActive)
+	if not isQinggongActive then return false end
+	local validTransitions = MovementTransitionTable[fsm.CurrentState]
+	return validTransitions and validTransitions[MovementStateDefs.DragonAscentCharging] or false
+end
+
+local vfxFolder = ReplicatedStorage:FindFirstChild("VFX")
+local vaultReticleTemplate = vfxFolder and vfxFolder:FindFirstChild("TreeVault") and vfxFolder.TreeVault:FindFirstChild("Reticle")
+
 function ClientMovementState.start()
 	local player = Players.LocalPlayer
 	local MovementIntent = RemoteRegistry.getEvent("MovementIntent")
@@ -31,16 +75,23 @@ function ClientMovementState.start()
 		local humanoid = character:WaitForChild("Humanoid")
 		local hrp = character:WaitForChild("HumanoidRootPart")
 		
+		-- [FIX: DISABLE DEFAULT RAGDOLL/FLINGING STATES]
+		humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+		humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+		
 		local fsm = FSM.new(MovementStateDefs.Idle, MovementTransitionTable)
 		ClientMovementState.CurrentFSM = fsm
 		
 		-- Intent tracking variables
 		local isCrouchToggled = false
 		local isRunningHeld = false
+		local isQinggongActive = false -- [QINGGONG] Sprint enhancer toggle
 		local wasMoving = false
 		local lastDashTime = 0
-		local fallStartTime = tick() 
+		local fallStartTime = tick()
 		local hasDoubleJumped = false
+        
+        -- ... Rest of your existing ClientMovementState.luau logic
 
 		-- [NEW: Task 2.2] Task Management Registry
 		-- Prevents Garbage Collection spikes by securely tracking and canceling active threads
@@ -61,19 +112,47 @@ function ClientMovementState.start()
 		parkourRayParams.FilterDescendantsInstances = {character}
 		parkourRayParams.IgnoreWater = true
 
+		-- Treetop Vault Targeting/Reticle
+		local currentVaultTarget = nil
+		local activeVaultReticle = nil
+
+		local function clearVaultReticle()
+			if activeVaultReticle then
+				activeVaultReticle:Destroy()
+				activeVaultReticle = nil
+			end
+		end
+
+		local function setVaultTarget(node)
+			if currentVaultTarget == node then return end
+			clearVaultReticle()
+			currentVaultTarget = node
+			if currentVaultTarget and vaultReticleTemplate then
+				local reticle = vaultReticleTemplate:Clone()
+				reticle.Adornee = currentVaultTarget
+				reticle.Parent = currentVaultTarget
+				reticle.Enabled = true
+				activeVaultReticle = reticle
+			end
+		end
+
 		local function evaluateState(forceExitAction)
 			-- ADDED: LightLanding to the protected whitelist
-			if not forceExitAction and (fsm.CurrentState == MovementStateDefs.Dashing or fsm.CurrentState == MovementStateDefs.Sliding or fsm.CurrentState == MovementStateDefs.LedgeVaulting or fsm.CurrentState == MovementStateDefs.WallBoost or fsm.CurrentState == MovementStateDefs.WallRunning or fsm.CurrentState == MovementStateDefs.WallLeaping or fsm.CurrentState == MovementStateDefs.HeavyLanding or fsm.CurrentState == MovementStateDefs.LightLanding) then return end
+			if not forceExitAction and (fsm.CurrentState == MovementStateDefs.Dashing or fsm.CurrentState == MovementStateDefs.Sliding or fsm.CurrentState == MovementStateDefs.LedgeVaulting or fsm.CurrentState == MovementStateDefs.TreeVaulting or fsm.CurrentState == MovementStateDefs.TreeIdle or fsm.CurrentState == MovementStateDefs.WallBoost or fsm.CurrentState == MovementStateDefs.WallRunning or fsm.CurrentState == MovementStateDefs.WallLeaping or fsm.CurrentState == MovementStateDefs.HeavyLanding or fsm.CurrentState == MovementStateDefs.LightLanding) then return end
 			
-			if not forceExitAction and (fsm.CurrentState == MovementStateDefs.Jumping or fsm.CurrentState == MovementStateDefs.DoubleJumping or fsm.CurrentState == MovementStateDefs.Falling) then return end
-			local isMoving = humanoid.MoveDirection.Magnitude > 0 
+			if not forceExitAction and (fsm.CurrentState == MovementStateDefs.Jumping or fsm.CurrentState == MovementStateDefs.DoubleJumping or fsm.CurrentState == MovementStateDefs.Falling or fsm.CurrentState == MovementStateDefs.MomentumFalling) then return end
+			local isMoving = humanoid.MoveDirection.Magnitude > 0
 			local targetState = MovementStateDefs.Idle
 
 			if isMoving then
 				if isCrouchToggled then
 					targetState = MovementStateDefs.CrouchWalking
 				elseif isRunningHeld then
-					targetState = MovementStateDefs.Running
+					if isQinggongActive then
+						targetState = MovementStateDefs.Sprinting
+					else
+						targetState = MovementStateDefs.Running
+					end
 				else
 					targetState = MovementStateDefs.Walking
 				end
@@ -125,22 +204,67 @@ function ClientMovementState.start()
 			end
 		end
 
+		-- MomentumFalling forces the Humanoid into Enum.HumanoidStateType.Physics (see
+		-- QinggongController) which disables Roblox's automatic Landed detection — so we drive the
+		-- landing transition ourselves with the same throttled-raycast pattern processParkour uses.
+		local function checkMomentumFallingLanded()
+			if hrp.AssemblyLinearVelocity.Y > 0 then return end -- still ascending, don't land mid-arc
+
+			local groundHit = workspace:Raycast(hrp.Position, Vector3.new(0, -MovementConstants.MomentumFallingGroundCheckDistance, 0), parkourRayParams)
+			if not groundHit then return end
+
+			local fallDuration = tick() - fallStartTime
+			local targetState = MovementStateDefs.LightLanding
+			local duration = MovementConstants.LightLandDuration
+
+			if fallDuration >= MovementConstants.HeavyFallTimeThreshold then
+				targetState = MovementStateDefs.HeavyLanding
+				duration = MovementConstants.HeavyLandDuration
+			end
+
+			local success = fsm:transition(targetState)
+			if success then
+				MovementIntent:FireServer("UpdateState", { targetState = targetState })
+
+				-- [NEW: Task 2.2] Managed GC
+				scheduleTask("Landing", duration, function()
+					if fsm.CurrentState == targetState then
+						evaluateState(true)
+					end
+				end)
+			end
+		end
+
 		-- [NEW: Task 2.1] Throttle variables
 		local parkourUpdateAccumulator = 0
 		local PARKOUR_TICK_RATE = 0.033 -- Scans ~30 times a second instead of 60+ (FPS independent)
+		local vaultScanAccumulator = 0
 
 		local renderConn = RunService.RenderStepped:Connect(function(dt)
 			-- [NEW: Task 2.1] Throttled Raycast Engine
 			parkourUpdateAccumulator += dt
 			if parkourUpdateAccumulator >= PARKOUR_TICK_RATE then
 				parkourUpdateAccumulator = 0
-				
+
 				-- Only calculate environment if we are actually in a state that utilizes it
 				if fsm.CurrentState == MovementStateDefs.WallHanging or fsm.CurrentState == MovementStateDefs.WallBoost or fsm.CurrentState == MovementStateDefs.WallRunning then
 					processParkour()
+				elseif fsm.CurrentState == MovementStateDefs.MomentumFalling then
+					checkMomentumFallingLanded()
 				end
 			end
-			
+
+			-- Treetop vault targeting/reticle — cosmetic scan, own cadence, independent of the parkour raycasts above
+			vaultScanAccumulator += dt
+			if vaultScanAccumulator >= MovementConstants.TreeVaultScanInterval then
+				vaultScanAccumulator = 0
+				if isVaultEligible(fsm, isQinggongActive) then
+					setVaultTarget(getBestVaultNode(hrp))
+				else
+					setVaultTarget(nil)
+				end
+			end
+
 			-- =========================================================
 			-- [THE FIX: THE RAYCAST BUMPER]
 			-- =========================================================
@@ -179,11 +303,18 @@ function ClientMovementState.start()
 		end)
 		
 		humanoid.StateChanged:Connect(function(oldState, newState)
-			if fsm.CurrentState == MovementStateDefs.WallLeaping or fsm.CurrentState == MovementStateDefs.WallBoost then 
+			if fsm.CurrentState == MovementStateDefs.TreeIdle or fsm.CurrentState == MovementStateDefs.DragonAscentCharging or fsm.CurrentState == MovementStateDefs.MomentumFalling then
+				-- Fully input/timer-driven exit (V/Space for TreeIdle, the charge timer for
+				-- DragonAscentCharging, our own ground raycast for MomentumFalling) — ignore all
+				-- humanoid state churn while locked into any of these.
+				return
+			end
+
+			if fsm.CurrentState == MovementStateDefs.WallLeaping or fsm.CurrentState == MovementStateDefs.WallBoost or fsm.CurrentState == MovementStateDefs.TreeVaulting then
 				if newState == Enum.HumanoidStateType.Landed then
 					evaluateState(true)
 				end
-				return 
+				return
 			end
 
 			if newState == Enum.HumanoidStateType.Jumping then
@@ -211,7 +342,7 @@ function ClientMovementState.start()
 				end
 				
 			elseif newState == Enum.HumanoidStateType.Landed then
-				hasDoubleJumped = false 
+				hasDoubleJumped = false
 				local fallDuration = tick() - fallStartTime
 				
 				local targetState = MovementStateDefs.LightLanding
@@ -241,7 +372,15 @@ function ClientMovementState.start()
 		ContextActionService:BindActionAtPriority("ParkourSpacebar", function(actionName, inputState, inputObject)
 			if inputState == Enum.UserInputState.Begin then
 				local state = fsm.CurrentState
-				
+
+				if state == MovementStateDefs.TreeIdle then
+					local success = fsm:transition(MovementStateDefs.Falling)
+					if success then
+						MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Falling })
+					end
+					return Enum.ContextActionResult.Sink
+				end
+
 				if state == MovementStateDefs.WallRunning then
 					local success = fsm:transition(MovementStateDefs.WallLeaping)
 					if success then
@@ -279,11 +418,11 @@ function ClientMovementState.start()
 					end
 				end
 				
-				if state == MovementStateDefs.Jumping or state == MovementStateDefs.Falling then
+				if state == MovementStateDefs.Jumping or state == MovementStateDefs.Falling or state == MovementStateDefs.MomentumFalling then
 					if ParkourRaycastUtils.checkWallRun(hrp, humanoid, parkourRayParams) then
 						local success = fsm:transition(MovementStateDefs.WallRunning)
 						if success then
-							hasDoubleJumped = false 
+							hasDoubleJumped = false
 							MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.WallRunning })
 							
 							-- [NEW: Task 2.2] Managed GC
@@ -297,9 +436,9 @@ function ClientMovementState.start()
 					if ParkourRaycastUtils.checkWallCling(hrp, parkourRayParams) then
 						local success = fsm:transition(MovementStateDefs.WallHanging)
 						if success then
-							hasDoubleJumped = false 
+							hasDoubleJumped = false
 							MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.WallHanging })
-							return Enum.ContextActionResult.Sink 
+							return Enum.ContextActionResult.Sink
 						end
 					end
 
@@ -327,6 +466,71 @@ function ClientMovementState.start()
 			return Enum.ContextActionResult.Pass
 		end, false, Enum.ContextActionPriority.High.Value, Enum.KeyCode.Space)
 
+		ContextActionService:BindAction("TreeVault", function(actionName, inputState, inputObject)
+			if inputState == Enum.UserInputState.Begin then
+				-- Tree vaulting takes priority when a reticle is locked; only falls through to
+				-- Dragon Ascent below when there's no vault target to grab onto.
+				if isVaultEligible(fsm, isQinggongActive) and currentVaultTarget then
+					local targetNode = currentVaultTarget
+					hrp:SetAttribute("VaultTargetPosition", targetNode.Position) -- client-side prediction only
+					local success = fsm:transition(MovementStateDefs.TreeVaulting)
+					if success then
+						hasDoubleJumped = false -- allow chaining a double jump off the far end of the vault
+						setVaultTarget(nil) -- clear the reticle for the duration of the vault itself
+						MovementIntent:FireServer("UpdateState", {
+							targetState = MovementStateDefs.TreeVaulting,
+							vaultTarget = targetNode.Position, -- server needs this to validate independently of the attribute
+						})
+
+						-- [NEW: Task 2.2] Managed GC
+						scheduleTask("TreeVault", MovementConstants.TreeVaultDuration, function()
+							if fsm.CurrentState == MovementStateDefs.TreeVaulting then
+								local idleSuccess = fsm:transition(MovementStateDefs.TreeIdle)
+								if idleSuccess then
+									MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.TreeIdle })
+								else
+									evaluateState(true)
+								end
+							end
+						end)
+						return Enum.ContextActionResult.Sink
+					end
+				end
+
+				if isDragonAscentEligible(fsm, isQinggongActive) then
+					local success = fsm:transition(MovementStateDefs.DragonAscentCharging)
+					if success then
+						MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.DragonAscentCharging })
+
+						-- [NEW: Task 2.2] Managed GC
+						scheduleTask("DragonAscentCharge", MovementConstants.DragonAscentChargeTime, function()
+							if fsm.CurrentState == MovementStateDefs.DragonAscentCharging then
+								local launchSuccess = fsm:transition(MovementStateDefs.DragonAscentLaunching)
+								if launchSuccess then
+									MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.DragonAscentLaunching })
+
+									-- [NEW: Task 2.2] Managed GC
+									-- Hands off into MomentumFalling instead of standard Falling — QinggongController
+									-- reacts to that transition by reading the constrained velocity, applying the
+									-- drag multiplier, and forcing Humanoid into raw Physics control.
+									scheduleTask("DragonAscentLaunch", MovementConstants.DragonAscentLaunchDuration, function()
+										if fsm.CurrentState == MovementStateDefs.DragonAscentLaunching then
+											local momentumSuccess = fsm:transition(MovementStateDefs.MomentumFalling)
+											if momentumSuccess then
+												MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.MomentumFalling })
+											end
+										end
+									end)
+								end
+							end
+						end)
+						return Enum.ContextActionResult.Sink
+					end
+				end
+			end
+			return Enum.ContextActionResult.Pass
+		end, false, Enum.KeyCode.V)
+
 		ContextActionService:BindAction("ToggleCrouch", function(actionName, inputState, inputObject)
 			if inputState == Enum.UserInputState.Begin then
 				
@@ -339,22 +543,22 @@ function ClientMovementState.start()
 					return Enum.ContextActionResult.Pass
 				end
 
-				if fsm.CurrentState == MovementStateDefs.Running then
+				if fsm.CurrentState == MovementStateDefs.Running or fsm.CurrentState == MovementStateDefs.Sprinting then
 					local success = fsm:transition(MovementStateDefs.Sliding)
 					if success then
-						isCrouchToggled = true 
+						isCrouchToggled = true
 						MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Sliding })
-						
+
 						-- [NEW: Task 2.2] Managed GC
 						scheduleTask("Slide", MovementConstants.SlideFrictionDuration, function()
 							if fsm.CurrentState == MovementStateDefs.Sliding then
-								evaluateState(true) 
+								evaluateState(true)
 							end
 						end)
 					end
 				else
 					isCrouchToggled = not isCrouchToggled
-					evaluateState(false) 
+					evaluateState(false)
 				end
 			end
 			return Enum.ContextActionResult.Pass
@@ -371,12 +575,21 @@ function ClientMovementState.start()
 			return Enum.ContextActionResult.Pass
 		end, false, Enum.KeyCode.LeftShift)
 
+		ContextActionService:BindAction("ToggleQinggong", function(_actionName, inputState, _inputObject)
+			if inputState == Enum.UserInputState.Begin then
+				isQinggongActive = not isQinggongActive
+				print("[Qinggong Ability] Sprint Toggle Active:", isQinggongActive)
+				evaluateState(false)
+			end
+			return Enum.ContextActionResult.Pass
+		end, false, Enum.KeyCode.Y)
+
 		ContextActionService:BindAction("TriggerDash", function(actionName, inputState, inputObject)
 			if inputState == Enum.UserInputState.Begin then
 				local now = tick()
 				
 				-- ADDED: DoubleJumping and WallLeaping as valid airborne dash states
-				if fsm.CurrentState == MovementStateDefs.Jumping or fsm.CurrentState == MovementStateDefs.Falling or fsm.CurrentState == MovementStateDefs.DoubleJumping or fsm.CurrentState == MovementStateDefs.WallLeaping then
+				if fsm.CurrentState == MovementStateDefs.Jumping or fsm.CurrentState == MovementStateDefs.Falling or fsm.CurrentState == MovementStateDefs.MomentumFalling or fsm.CurrentState == MovementStateDefs.DoubleJumping or fsm.CurrentState == MovementStateDefs.WallLeaping then
 					if MovementValidationUtils.canDash(lastDashTime, now) then
 						local success = fsm:transition(MovementStateDefs.AirDashing)
 						if success then
@@ -396,15 +609,31 @@ function ClientMovementState.start()
 					end
 					
 				elseif MovementValidationUtils.canDash(lastDashTime, now) and MovementValidationUtils.isLegalDashState(fsm.CurrentState, MovementTransitionTable) then
-					local success = fsm:transition(MovementStateDefs.Dashing)
+					local dashState = if isQinggongActive then MovementStateDefs.Flashstepping else MovementStateDefs.Dashing
+					local dashDuration = if isQinggongActive then MovementConstants.FlashstepDuration else MovementConstants.DashDuration
+					local success = fsm:transition(dashState)
 					if success then
 						lastDashTime = now
 						MovementIntent:FireServer("RequestDash")
 						
 						-- [NEW: Task 2.2] Managed GC
-						scheduleTask("Dash", MovementConstants.DashDuration, function()
-							if fsm.CurrentState == MovementStateDefs.Dashing then
-								evaluateState(true)
+						scheduleTask("Dash", dashDuration, function()
+							if fsm.CurrentState == dashState then
+								if isQinggongActive and humanoid.MoveDirection.Magnitude == 0 then
+									local recoverySuccess = fsm:transition(MovementStateDefs.FlashstepRecovery)
+									if recoverySuccess then
+										MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.FlashstepRecovery })
+										scheduleTask("DashRecovery", MovementConstants.FlashstepRecoveryDuration, function()
+											if fsm.CurrentState == MovementStateDefs.FlashstepRecovery then
+												evaluateState(true)
+											end
+										end)
+									else
+										evaluateState(true)
+									end
+								else
+									evaluateState(true)
+								end
 							end
 						end)
 					end
@@ -415,11 +644,14 @@ function ClientMovementState.start()
 		
 		humanoid.Died:Once(function()
 			renderConn:Disconnect()
+			clearVaultReticle()
 			ContextActionService:UnbindAction("ToggleCrouch")
-			ContextActionService:UnbindAction("ToggleRun") 
+			ContextActionService:UnbindAction("ToggleRun")
+			ContextActionService:UnbindAction("ToggleQinggong")
 			ContextActionService:UnbindAction("TriggerDash")
 			ContextActionService:UnbindAction("ParkourSpacebar")
-			
+			ContextActionService:UnbindAction("TreeVault")
+
 			-- Clean up all managed threads safely
 			for _, t in pairs(activeTasks) do
 				task.cancel(t)
