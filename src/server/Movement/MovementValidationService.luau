@@ -99,7 +99,7 @@ function MovementValidationService.start()
 			
 			-- TASK 3.2: Enforce Server-Side Cooldowns
 			if targetState == MovementStateDefs.Dashing or targetState == MovementStateDefs.AirDashing then
-				local now = tick()
+				local now = os.clock()
 				if not MovementValidationUtils.canDash(profile.lastDashTime, now) then
 					warn(string.format("[Anti-Exploit] %s attempted to speed-hack/spam dashes.", player.Name))
 					return -- Reject dash, cooldown hasn't finished

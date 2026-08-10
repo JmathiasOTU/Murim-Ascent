@@ -44,7 +44,7 @@ function ClientMovementState.start()
 		local isQinggongActive = false -- [QINGGONG] Sprint enhancer toggle
 		local wasMoving = false
 		local lastDashTime = 0
-		local fallStartTime = tick()
+		local fallStartTime = os.clock()
 		local hasDoubleJumped = false
 
         -- ... Rest of your existing ClientMovementState.luau logic
@@ -217,13 +217,13 @@ function ClientMovementState.start()
 			elseif newState == Enum.HumanoidStateType.Freefall then
 				local success = fsm:transition(MovementStateDefs.Falling)
 				if success then
-					fallStartTime = tick()
+					fallStartTime = os.clock()
 					MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Falling })
 				end
 
 			elseif newState == Enum.HumanoidStateType.Landed then
 				hasDoubleJumped = false
-				local fallDuration = tick() - fallStartTime
+				local fallDuration = os.clock() - fallStartTime
 
 				local targetState = MovementStateDefs.LightLanding
 				local duration = MovementConstants.LightLandDuration
@@ -393,7 +393,7 @@ function ClientMovementState.start()
 
 		ContextActionService:BindAction("TriggerDash", function(actionName, inputState, inputObject)
 			if inputState == Enum.UserInputState.Begin then
-				local now = tick()
+				local now = os.clock()
 
 				-- ADDED: DoubleJumping and WallLeaping as valid airborne dash states
 				if fsm.CurrentState == MovementStateDefs.Jumping or fsm.CurrentState == MovementStateDefs.Falling or fsm.CurrentState == MovementStateDefs.DoubleJumping or fsm.CurrentState == MovementStateDefs.WallLeaping then
