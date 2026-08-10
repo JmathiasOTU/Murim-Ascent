@@ -58,6 +58,7 @@ local MovementConstants = {
 	},
 	MomentumHorizontalForce = 6000, -- PerAxis cap on the X/Z current; tuned so WASD can still fight it
 	MomentumDecayDuration = 0.6, -- how long the XZ current takes to fade to zero
+	LedgeJumpAirtimeDuration = 0.15, -- lets the ledge-jump animation read before the momentum handoff
 
 	-- Wall shit
 	WallBoostPower = 90,

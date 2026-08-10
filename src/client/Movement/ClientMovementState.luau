@@ -280,9 +280,12 @@ function ClientMovementState.start()
 		end)
 		
 		humanoid.StateChanged:Connect(function(oldState, newState)
-			if fsm.CurrentState == MovementStateDefs.TreeIdle or fsm.CurrentState == MovementStateDefs.DragonAscentCharging then
+			if fsm.CurrentState == MovementStateDefs.TreeIdle or fsm.CurrentState == MovementStateDefs.DragonAscentCharging or fsm.CurrentState == MovementStateDefs.LedgeJumping then
 				-- Fully input/timer-driven exit (V/Space for TreeIdle, the charge timer for
-				-- DragonAscentCharging) — ignore all humanoid state churn while locked into either.
+				-- DragonAscentCharging, our own handoff timer for LedgeJumping) — ignore all humanoid
+				-- state churn while locked into any of these. LedgeJumping needs this because the
+				-- native Freefall event otherwise fires almost immediately after Jumping and yanks the
+				-- state away before its one-shot animation gets any time to read.
 				-- MomentumFalling is deliberately NOT in this list: it no longer forces Humanoid into
 				-- Physics state, so native Jumping/Freefall/Landed events must flow through normally
 				-- for landing detection, double jump, wall interactions, etc. to keep working.
@@ -304,10 +307,28 @@ function ClientMovementState.start()
 					local downRay = workspace:Raycast(forwardProjection, Vector3.new(0, -MovementConstants.LedgeJumpEdgeCheckDown, 0), parkourRayParams)
 					
 					local targetState = if not downRay then MovementStateDefs.LedgeJumping else MovementStateDefs.Jumping
-					
+
 					local success = fsm:transition(targetState)
-					if success then MovementIntent:FireServer("UpdateState", { targetState = targetState }) end
-					return 
+					if success then
+						MovementIntent:FireServer("UpdateState", { targetState = targetState })
+
+						if targetState == MovementStateDefs.LedgeJumping then
+							-- Holds LedgeJumping open long enough for its own animation to read before
+							-- handing off into the momentum-conserving fall — see the ignore-churn guard
+							-- above for why native Freefall can't be trusted to time this instead.
+							scheduleTask("LedgeJumpMomentumHandoff", MovementConstants.LedgeJumpAirtimeDuration, function()
+								if fsm.CurrentState == MovementStateDefs.LedgeJumping then
+									local momentumTarget = fallTargetFor(MovementStateDefs.LedgeJumping)
+									local momentumSuccess = fsm:transition(momentumTarget)
+									if momentumSuccess then
+										fallStartTime = tick()
+										MovementIntent:FireServer("UpdateState", { targetState = momentumTarget })
+									end
+								end
+							end)
+						end
+					end
+					return
 				end
 
 				local success = fsm:transition(MovementStateDefs.Jumping)
