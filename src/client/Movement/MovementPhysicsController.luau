@@ -58,21 +58,11 @@ function MovementPhysicsController.start()
 				activeDashVelocity.Parent = hrp
 
 				if newState == MovementStateDefs.Dashing then
-					-- DIRECTIONAL DODGE LOGIC (4-Way Snapping)
+					-- Free-direction dash: velocity follows the held input exactly (no 4-way
+					-- snapping) — falls back to a backward dodge when no direction is held.
 					local moveVector = humanoid.MoveDirection
-					local dashDirection = -hrp.CFrame.LookVector
-					
-					if moveVector.Magnitude > 0.1 then
-						local rightDot = moveVector:Dot(hrp.CFrame.RightVector)
-						local forwardDot = moveVector:Dot(hrp.CFrame.LookVector)
-						
-						if math.abs(forwardDot) > math.abs(rightDot) then
-							dashDirection = forwardDot > 0 and hrp.CFrame.LookVector or -hrp.CFrame.LookVector
-						else
-							dashDirection = rightDot > 0 and hrp.CFrame.RightVector or -hrp.CFrame.RightVector
-						end
-					end
-					
+					local dashDirection = if moveVector.Magnitude > MovementConstants.WalkThreshold then moveVector.Unit else -hrp.CFrame.LookVector
+
 					activeDashVelocity.VectorVelocity = dashDirection * MovementConstants.DashPower
 					local targetEndVelocity = dashDirection * MovementConstants.WalkSpeed
 					

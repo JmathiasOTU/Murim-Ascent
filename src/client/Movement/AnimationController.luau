@@ -10,34 +10,29 @@ local AnimationController = {}
 
 -- 1. Standard Movement Animations
 local ANIMATION_IDS = {
-	[MovementStateDefs.Idle] = "rbxassetid://100161560231153", 
+	[MovementStateDefs.Idle] = "rbxassetid://100161560231153",
 	[MovementStateDefs.Walking] = "rbxassetid://71563071935374",
-	[MovementStateDefs.Running] = "rbxassetid://88091162849923", 
+	[MovementStateDefs.Running] = "rbxassetid://88091162849923",
 	[MovementStateDefs.Sprinting] = "rbxassetid://115737519957403", -- [QINGGONG] Sprinting animation (replace with dedicated Qinggong sprint ID)
 	--[MovementStateDefs.Flashstepping] = "rbxassetid://YOUR_FLASHSTEP_ID_HERE", -- [QINGGONG] Flashstep animation
-	[MovementStateDefs.FlashstepRecovery] = "rbxassetid://110003377451179", -- [QINGGONG] Flashstep recovery pose (replace with dedicated pose ID)
-	[MovementStateDefs.Crouching] = "rbxassetid://103866147082035", 
-	[MovementStateDefs.CrouchWalking] = "rbxassetid://74749735884197", 
-	[MovementStateDefs.Sliding] = "rbxassetid://122916678970923", 
+	[MovementStateDefs.Crouching] = "rbxassetid://103866147082035",
+	[MovementStateDefs.CrouchWalking] = "rbxassetid://74749735884197",
+	[MovementStateDefs.Sliding] = "rbxassetid://122916678970923",
 	[MovementStateDefs.Jumping] = "rbxassetid://115649888837470",
 	[MovementStateDefs.AirDashing] = "rbxassetid://98118360762129",
 	[MovementStateDefs.Falling] = "rbxassetid://96469704439785",
-	[MovementStateDefs.MomentumFalling] = "rbxassetid://96469704439785", -- reuses the Falling pose for the physics-driven momentum fall
 
-	[MovementStateDefs.WallHanging] = "rbxassetid://132023512277724", 
+	[MovementStateDefs.WallHanging] = "rbxassetid://132023512277724",
 	[MovementStateDefs.WallBoost] = "rbxassetid://113152742747545",
 	[MovementStateDefs.LedgeJumping] = "rbxassetid://137786735677269",
-	-- [MovementStateDefs.TreeVaulting] = "rbxassetid://YOUR_VAULT_ANIM_ID_HERE", -- [QINGGONG] Treetop vault animation
 	[MovementStateDefs.LightLanding] = "rbxassetid://133945243946271",
 	[MovementStateDefs.HeavyLanding] = "rbxassetid://105831901844953",
-	-- [MovementStateDefs.DragonAscentCharging] = "rbxassetid://YOUR_DRAGON_ASCENT_CHARGE_ID_HERE", -- [QINGGONG] Dragon Ascent windup pose
-	-- [MovementStateDefs.DragonAscentLaunching] = "rbxassetid://YOUR_DRAGON_ASCENT_LAUNCH_ID_HERE", -- [QINGGONG] Dragon Ascent launch burst
-	
-	
+
+
 	WallLatch = "rbxassetid://115846143777391",
 	WallRunLeft = "rbxassetid://104985993049629",
 	WallRunRight = "rbxassetid://120872562975564",
-	WallLeapRight = "rbxassetid://95205600216531",  
+	WallLeapRight = "rbxassetid://95205600216531",
 	WallLeapLeft = "rbxassetid://92795763809886",
 	DoubleJump1 = "rbxassetid://105731615843957",
 	DoubleJump2 = "rbxassetid://109908788558574",
@@ -77,19 +72,19 @@ function AnimationController.start()
 		local animator = humanoid:WaitForChild("Animator")
 		local hrp = character:WaitForChild("HumanoidRootPart")
 		local rootJoint = getRootJoint(character)
-		
+
 		-- Setup RaycastParams to ignore the player's body
 		local rayParams = RaycastParams.new()
 		rayParams.FilterType = Enum.RaycastFilterType.Exclude
 		rayParams.FilterDescendantsInstances = {character}
-		
+
 		local loadedTracks = {}
 		local loadedDashTracks = {}
-		local loadedVaultTracks = {} 
-		
+		local loadedVaultTracks = {}
+
 		local fsmConnection = nil
 		local renderConnection = nil
-		
+
 		local baseC0 = rootJoint and rootJoint.C0 or CFrame.new()
 		local currentRoll = 0
 		local currentPitch = 0
@@ -99,32 +94,32 @@ function AnimationController.start()
 			local anim = Instance.new("Animation")
 			anim.AnimationId = animId
 			local track = animator:LoadAnimation(anim)
-			
+
 			-- Only loop tracks that aren't jumps, boosts, impacts, or air dashes!
-			if stateName == MovementStateDefs.Jumping or stateName == "DoubleJump1" or stateName == "DoubleJump2" or stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.AirDashing or stateName == MovementStateDefs.WallBoost or stateName == "WallLatch" or stateName == "WallLeapLeft" or stateName == "WallLeapRight" or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding or stateName == MovementStateDefs.Flashstepping or stateName == MovementStateDefs.FlashstepRecovery or stateName == MovementStateDefs.DragonAscentCharging or stateName == MovementStateDefs.DragonAscentLaunching then
+			if stateName == MovementStateDefs.Jumping or stateName == "DoubleJump1" or stateName == "DoubleJump2" or stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.AirDashing or stateName == MovementStateDefs.WallBoost or stateName == "WallLatch" or stateName == "WallLeapLeft" or stateName == "WallLeapRight" or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding or stateName == MovementStateDefs.Flashstepping then
 				track.Looped = false
 			else
-				track.Looped = true 
+				track.Looped = true
 			end
-			
+
 			-- Force Priorities to avoid Roblox default script bleeding
-			if stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding or stateName == MovementStateDefs.AirDashing or stateName == MovementStateDefs.Flashstepping or stateName == MovementStateDefs.FlashstepRecovery or stateName == MovementStateDefs.DragonAscentCharging or stateName == MovementStateDefs.DragonAscentLaunching then
+			if stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding or stateName == MovementStateDefs.AirDashing or stateName == MovementStateDefs.Flashstepping then
 				track.Priority = Enum.AnimationPriority.Action
 			else
 				-- Forces standard movement (Walk/Run/Idle) to dominate Roblox defaults
-				track.Priority = Enum.AnimationPriority.Movement 
+				track.Priority = Enum.AnimationPriority.Movement
 			end
-			
+
 			loadedTracks[stateName] = track
 		end
-		
+
 		-- 4. Preload Dash Tracks (Ensure these DO NOT loop)
 		for dirName, animId in pairs(DASH_ANIMATION_IDS) do
 			local anim = Instance.new("Animation")
 			anim.AnimationId = animId
 			local track = animator:LoadAnimation(anim)
-			track.Looped = false 
-			track.Priority = Enum.AnimationPriority.Action 
+			track.Looped = false
+			track.Priority = Enum.AnimationPriority.Action
 			loadedDashTracks[dirName] = track
 		end
 
@@ -136,14 +131,14 @@ function AnimationController.start()
 			local anim = Instance.new("Animation")
 			anim.AnimationId = animId
 			local track = animator:LoadAnimation(anim)
-			track.Looped = false 
-			track.Priority = Enum.AnimationPriority.Action 
+			track.Looped = false
+			track.Priority = Enum.AnimationPriority.Action
 			table.insert(loadedVaultTracks, track)
 		end
 
 		-- 5. Handle State Transitions
 		fsmConnection = fsm.StateChanged:Connect(function(oldState, newState)
-			
+
 			-- ALWAYS STOP THE OLD STATE FIRST
 			if oldState == MovementStateDefs.Dashing then
 				for _, track in pairs(loadedDashTracks) do
@@ -152,21 +147,21 @@ function AnimationController.start()
 			elseif loadedTracks[oldState] then
 				-- Do not instantly stop the Jump or LedgeJump animation if transitioning into a Fall
 				if not ((oldState == MovementStateDefs.Jumping or oldState == MovementStateDefs.LedgeJumping) and newState == MovementStateDefs.Falling) then
-					loadedTracks[oldState]:Stop(0.1) 
+					loadedTracks[oldState]:Stop(0.1)
 				end
 			end
-			
+
 			-- Specifically clean up the WallLatch impact animation if we leave the wall early
 			if oldState == MovementStateDefs.WallHanging and loadedTracks.WallLatch then
 				loadedTracks.WallLatch:Stop(0.1)
 			end
-			
+
 			-- Specifically clean up WallRun directional animations when we fall or jump off
 			if oldState == MovementStateDefs.WallRunning then
 				if loadedTracks.WallRunLeft then loadedTracks.WallRunLeft:Stop(0.1) end
 				if loadedTracks.WallRunRight then loadedTracks.WallRunRight:Stop(0.1) end
 			end
-			
+
 			-- PLAY THE NEW STATE
 			if newState == MovementStateDefs.Dashing then
 				local moveVector = humanoid.MoveDirection
@@ -187,7 +182,7 @@ function AnimationController.start()
 				if trackToPlay then
 					trackToPlay:Play(0.05)
 				end
-				
+
 			elseif newState == MovementStateDefs.WallHanging then
 				-- LAYERED ANIMATION TRICK: Play the idle loop AND the heavy impact simultaneously!
 				if loadedTracks[MovementStateDefs.WallHanging] then
@@ -196,7 +191,7 @@ function AnimationController.start()
 				if loadedTracks.WallLatch then
 					loadedTracks.WallLatch:Play(0.05)
 				end
-				
+
 			elseif newState == MovementStateDefs.WallRunning then
 				-- Dynamically check which side the wall is on with RaycastParams
 				local rightRay = workspace:Raycast(hrp.CFrame.Position, hrp.CFrame.RightVector * 3.5, rayParams)
@@ -214,7 +209,7 @@ function AnimationController.start()
 				else
 					if loadedTracks.WallLeapLeft then loadedTracks.WallLeapLeft:Play(0.05) end
 				end
-				
+
 			-- BLOCK FOR RANDOMIZED VAULTING
 			elseif newState == MovementStateDefs.LedgeVaulting then
 				if #loadedVaultTracks > 0 then
@@ -228,7 +223,7 @@ function AnimationController.start()
 				if track then
 					track:Play(0.1)
 				end
-				
+
 			else
 				-- Play standard animation (Walking, Jumping, Falling, AirDashing, WallBoost, Sliding, etc.)
 				if loadedTracks[newState] then
@@ -236,7 +231,7 @@ function AnimationController.start()
 				end
 			end
 		end)
-		
+
 		-- 6. Handle Procedural Rig Manipulation (Leaning)
 		if rootJoint then
 			renderConnection = RunService.RenderStepped:Connect(function(dt)
@@ -249,7 +244,7 @@ function AnimationController.start()
 						currentRoll, currentPitch = 0, 0
 						rootJoint.C0 = baseC0
 					end
-					return 
+					return
 				end
 
 				-- 2. THE FIX: Only calculate lean if we are NOT on a wall
@@ -273,12 +268,12 @@ function AnimationController.start()
 				rootJoint.C0 = baseC0 * CFrame.Angles(currentPitch, 0, currentRoll)
 			end)
 		end
-		
+
 		-- 7. Unified Garbage Collection
 		humanoid.Died:Once(function()
 			if fsmConnection then fsmConnection:Disconnect() end
 			if renderConnection then renderConnection:Disconnect() end
-			
+
 			for _, track in pairs(loadedTracks) do
 				track:Stop()
 				track:Destroy()

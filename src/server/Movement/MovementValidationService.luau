@@ -1,9 +1,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
-local CollectionService = game:GetService("CollectionService")
 
-local MovementConstants = require(ReplicatedStorage.Shared.Movement.MovementConstants)
 local MovementStateDefs = require(ReplicatedStorage.Shared.Movement.MovementStates.MovementStateDefs)
 local MovementTransitionTable = require(ReplicatedStorage.Shared.Movement.MovementStates.MovementTransitionTable)
 local MovementValidationUtils = require(ReplicatedStorage.Shared.Movement.MovementValidationUtils)
@@ -35,18 +33,6 @@ local function isNearWallOrLedge(character)
 	
 	-- If any of these rays hit a solid object, the server agrees they are near a wall
 	return hitLook or hitRight or hitLeft
-end
-
--- Helper: confirms a claimed TreeVaulting target actually matches a real, mapped node
-local function hasNearbyVaultNode(targetPos)
-	if typeof(targetPos) ~= "Vector3" then return false end
-
-	for _, node in CollectionService:GetTagged("TreeVaultNode") do
-		if (node.Position - targetPos).Magnitude <= MovementConstants.TreeVaultNodeTolerance then
-			return true
-		end
-	end
-	return false
 end
 
 -- Helper: kills momentum and briefly anchors the HRP to force a rubberband correction
@@ -129,11 +115,6 @@ function MovementValidationService.start()
 
 				if not isNearWallOrLedge(character) then
 					rubberbandReject(character, player, string.format("triggered parkour %s but is floating in mid-air!", targetState))
-					return
-				end
-			elseif targetState == MovementStateDefs.TreeVaulting then
-				if not hasNearbyVaultNode(data.vaultTarget) then
-					rubberbandReject(character, player, "claimed a TreeVaulting target with no matching TreeVaultNode!")
 					return
 				end
 			end
