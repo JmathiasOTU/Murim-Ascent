@@ -5,6 +5,7 @@ local MovementController = require(script.Parent.Parent.Movement.MovementControl
 local MovementPhysicsController = require(script.Parent.Parent.Movement.MovementPhysicsController)
 local QinggongController = require(script.Parent.Parent.Movement.QinggongController)
 local VFXPlaybackController = require(script.Parent.Parent.VFX.VFXPlaybackController)
+local FootstepController = require(script.Parent.Parent.VFX.FootstepController)
 local ClientBootstrap = {}
 
 function ClientBootstrap.start()
@@ -14,6 +15,7 @@ function ClientBootstrap.start()
 	ClientMovementState.start()
 
 	-- 2. Initialize the subscribers
+	FootstepController.start()
 	AnimationController.start()
 	MovementController.start() -- Your existing procedural lean script
 	MovementPhysicsController.start()

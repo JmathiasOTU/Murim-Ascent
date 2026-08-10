@@ -36,6 +36,12 @@ local ANIMATION_IDS = {
 	WallLeapLeft = "rbxassetid://92795763809886",
 	DoubleJump1 = "rbxassetid://105731615843957",
 	DoubleJump2 = "rbxassetid://109908788558574",
+
+	-- Directional Walk Animations
+	WalkForward = "rbxassetid://92568824050794",
+	WalkLeft = "rbxassetid://86726450042338",
+	WalkRight = "rbxassetid://121412877671104",
+	WalkBack = "rbxassetid://137285196084022",
 }
 
 -- 2. Directional Dash Animations
@@ -84,6 +90,8 @@ function AnimationController.start()
 
 		local fsmConnection = nil
 		local renderConnection = nil
+		local walkDirectionConnection = nil
+		local currentWalkAnim = nil
 
 		local baseC0 = rootJoint and rootJoint.C0 or CFrame.new()
 		local currentRoll = 0
@@ -162,6 +170,19 @@ function AnimationController.start()
 				if loadedTracks.WallRunRight then loadedTracks.WallRunRight:Stop(0.1) end
 			end
 
+			-- Directional walking only runs while actually in Walking — kill the MoveDirection
+			-- listener and whichever directional track is active the instant we leave it
+			if newState ~= MovementStateDefs.Walking then
+				if walkDirectionConnection then
+					walkDirectionConnection:Disconnect()
+					walkDirectionConnection = nil
+				end
+				if currentWalkAnim and loadedTracks[currentWalkAnim] then
+					loadedTracks[currentWalkAnim]:Stop(0.1)
+					currentWalkAnim = nil
+				end
+			end
+
 			-- PLAY THE NEW STATE
 			if newState == MovementStateDefs.Dashing then
 				local moveVector = humanoid.MoveDirection
@@ -224,6 +245,43 @@ function AnimationController.start()
 					track:Play(0.1)
 				end
 
+			elseif newState == MovementStateDefs.Walking then
+				-- Swaps between WalkForward/WalkLeft/WalkRight based on camera-relative input,
+				-- instead of a single generic walk loop — see updateWalkDirection below.
+				local function updateWalkDirection()
+					local moveDir = humanoid.MoveDirection
+					if moveDir.Magnitude == 0 then return end
+
+					local rightDot = hrp.CFrame.RightVector:Dot(moveDir)
+
+					local targetAnimKey = "WalkForward"
+					if rightDot > 0.5 then
+						targetAnimKey = "WalkRight"
+					elseif rightDot < -0.5 then
+						targetAnimKey = "WalkLeft"
+					end
+
+					-- Only swap tracks if the resolved direction actually changed
+					if currentWalkAnim ~= targetAnimKey then
+						if currentWalkAnim and loadedTracks[currentWalkAnim] then
+							loadedTracks[currentWalkAnim]:Stop(0.2)
+						end
+
+						currentWalkAnim = targetAnimKey
+						local trackToPlay = loadedTracks[targetAnimKey]
+						if trackToPlay then
+							trackToPlay:Play(0.2)
+						end
+					end
+				end
+
+				-- Runs every frame rather than on MoveDirection-changed: MoveDirection is a fixed
+				-- camera-relative world vector that doesn't update as AutoRotate turns hrp.CFrame
+				-- to face it, so a change-signal alone would leave the dot product (and therefore
+				-- the animation) stuck at whatever it read the instant the key was first pressed.
+				-- The currentWalkAnim ~= targetAnimKey guard above already keeps this cheap.
+				walkDirectionConnection = RunService.RenderStepped:Connect(updateWalkDirection)
+
 			else
 				-- Play standard animation (Walking, Jumping, Falling, AirDashing, WallBoost, Sliding, etc.)
 				if loadedTracks[newState] then
@@ -273,6 +331,7 @@ function AnimationController.start()
 		humanoid.Died:Once(function()
 			if fsmConnection then fsmConnection:Disconnect() end
 			if renderConnection then renderConnection:Disconnect() end
+			if walkDirectionConnection then walkDirectionConnection:Disconnect() end
 
 			for _, track in pairs(loadedTracks) do
 				track:Stop()
