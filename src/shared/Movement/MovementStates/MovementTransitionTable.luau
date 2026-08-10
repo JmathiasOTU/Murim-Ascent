@@ -159,6 +159,7 @@ return {
 
 	[MovementStateDefs.AirDashing] = {
 		[MovementStateDefs.Falling] = true,
+		[MovementStateDefs.MomentumFalling] = true, -- conserves the dash's XZ speed past the apex
 		[MovementStateDefs.DoubleJumping] = true,
 		[MovementStateDefs.WallHanging] = true,
 		[MovementStateDefs.WallRunning] = true,
@@ -219,6 +220,7 @@ return {
 	},
 	[MovementStateDefs.LedgeJumping] = {
 		[MovementStateDefs.Falling] = true,
+		[MovementStateDefs.MomentumFalling] = true, -- conserves the jump's XZ speed past the apex
 		[MovementStateDefs.AirDashing] = true,
 		[MovementStateDefs.WallRunning] = true,
 		[MovementStateDefs.WallHanging] = true,
@@ -256,6 +258,7 @@ return {
 	},
 	[MovementStateDefs.WallLeaping] = {
 		[MovementStateDefs.Falling] = true,
+		[MovementStateDefs.MomentumFalling] = true, -- conserves the leap's XZ speed past the apex
 		[MovementStateDefs.DoubleJumping] = true,
 		[MovementStateDefs.WallHanging] = true,
 		[MovementStateDefs.WallRunning] = true,

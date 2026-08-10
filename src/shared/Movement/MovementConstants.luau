@@ -43,10 +43,21 @@ local MovementConstants = {
 	-- Dragon Ascent Constants (grounded explosive diagonal launch)
 	DragonAscentChargeTime = 2.0, -- the windup
 	DragonAscentLaunchDuration = 0.2, -- the explosive burst
-	DragonAscentForwardSpeed = 120,
+	DragonAscentForwardSpeed = 180,
 	DragonAscentUpwardSpeed = 180,
-	DragonAscentMomentumRetention = 0.35, -- fraction of launch velocity kept on handoff to free-fall
-	MomentumFallingGroundCheckDistance = 4, -- downward raycast range used to manually detect landing
+
+	-- Momentum Conservation (XZ carry-through past apex)
+	-- Fraction of horizontal (X/Z) speed kept when a launch ability hands off into MomentumFalling.
+	-- Vertical (Y) velocity is never touched here — gravity/jumping stay fully Humanoid-owned.
+	DefaultMomentumRetention = 0.5,
+	MomentumRetentionByState = {
+		DragonAscentLaunching = 0.35,
+		LedgeJumping = 0.7,
+		WallLeaping = 0.6,
+		AirDashing = 0.8,
+	},
+	MomentumHorizontalForce = 6000, -- PerAxis cap on the X/Z current; tuned so WASD can still fight it
+	MomentumDecayDuration = 0.6, -- how long the XZ current takes to fade to zero
 
 	-- Wall shit
 	WallBoostPower = 90,

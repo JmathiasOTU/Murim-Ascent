@@ -1,5 +1,6 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 
 local ClientMovementState = require(script.Parent.ClientMovementState)
 local MovementConstants = require(ReplicatedStorage.Shared.Movement.MovementConstants)
@@ -51,13 +52,6 @@ function QinggongController.start()
 				hrp.Anchored = false
 			end
 
-			-- MomentumFalling forces the Humanoid into raw Physics control (see below) — hand control
-			-- back to the Humanoid's normal state machine the instant we leave it, regardless of what
-			-- caused the exit, so landing detection and normal air/ground control resume.
-			if oldState == MovementStateDefs.MomentumFalling and newState ~= MovementStateDefs.MomentumFalling then
-				humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
-			end
-
 			-- Placeholder hook for a future Qi-powered movement state.
 			if newState == "WaterRunning" then
 				-- Apply Qinggong water-run hover/traction here.
@@ -98,18 +92,42 @@ function QinggongController.start()
 				-- after DragonAscentLaunchDuration, and the branch below performs the velocity handoff at
 				-- that exact moment — so there's only one authoritative timer, not two racing ones.
 			elseif newState == MovementStateDefs.MomentumFalling then
-				-- Velocity Handoff: only carry a fraction of the launch speed into the momentum fall so
-				-- the burst reads as an explosive pop rather than floaty, indefinite flight. Read the
-				-- constrained velocity BEFORE cleanupDash() destroys the constraint.
-				local inheritedVelocity = if activeDashVelocity then activeDashVelocity.VectorVelocity else hrp.AssemblyLinearVelocity
+				-- Velocity Handoff: works for any launch ability, whether it drove hrp via our own
+				-- LinearVelocity constraint (Dragon Ascent) or a bare AssemblyLinearVelocity write
+				-- (LedgeJumping/AirDashing/WallLeaping in MovementPhysicsController) — both are
+				-- reflected in AssemblyLinearVelocity, so read that live, BEFORE cleanupDash() tears
+				-- down whatever constraint we own.
+				local currentVelocity = hrp.AssemblyLinearVelocity
 				cleanupDash()
-				hrp.AssemblyLinearVelocity = inheritedVelocity * MovementConstants.DragonAscentMomentumRetention
 
-				-- Hands 100% of control to the physics engine so Roblox's WalkSpeed-based air control
-				-- can't fight (and kill) the momentum we just applied. ClientMovementState's own ground
-				-- raycast (checkMomentumFallingLanded) is responsible for detecting touchdown and exiting
-				-- this state, since Physics suppresses the Humanoid's automatic Landed detection.
-				humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+				local retention = MovementConstants.MomentumRetentionByState[oldState] or MovementConstants.DefaultMomentumRetention
+				local targetXZ = Vector3.new(currentVelocity.X * retention, 0, currentVelocity.Z * retention)
+
+				-- Horizontal-only "current": Y-axis force is 0, so gravity, jumping, double-jumping,
+				-- and landing all stay fully Humanoid-owned and behave normally — we deliberately never
+				-- touch HumanoidStateType here. Forcing Enum.HumanoidStateType.Physics (the old approach)
+				-- disabled Humanoid's own air-steering AND its automatic upright balancing, which is what
+				-- caused locked trajectories and ragdoll-flinging on landing. The force cap is finite
+				-- (not the near-infinite MaxPhysicsForce used for hard-locked bursts elsewhere in this
+				-- file), so the player's own WASD air control can still push back against this current,
+				-- and it decays to zero over MomentumDecayDuration using the same tween-decay idiom
+				-- MovementPhysicsController already uses for Dash/WallBoost/HeavyLanding.
+				activeDashAttachment = Instance.new("Attachment")
+				activeDashAttachment.Parent = hrp
+				activeDashAttachment.WorldPosition = hrp.AssemblyCenterOfMass
+
+				activeDashVelocity = Instance.new("LinearVelocity")
+				activeDashVelocity.Attachment0 = activeDashAttachment
+				activeDashVelocity.RelativeTo = Enum.ActuatorRelativeTo.World
+				activeDashVelocity.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+				activeDashVelocity.ForceLimitMode = Enum.ForceLimitMode.PerAxis
+				activeDashVelocity.MaxAxesForce = Vector3.new(MovementConstants.MomentumHorizontalForce, 0, MovementConstants.MomentumHorizontalForce)
+				activeDashVelocity.VectorVelocity = targetXZ
+				activeDashVelocity.Parent = hrp
+
+				local tweenInfo = TweenInfo.new(MovementConstants.MomentumDecayDuration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+				activeTween = TweenService:Create(activeDashVelocity, tweenInfo, { VectorVelocity = Vector3.zero })
+				activeTween:Play()
 			elseif newState == MovementStateDefs.TreeIdle then
 				cleanupDash()
 

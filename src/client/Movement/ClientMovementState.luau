@@ -59,6 +59,16 @@ local function isDragonAscentEligible(fsm, isQinggongActive)
 	return validTransitions and validTransitions[MovementStateDefs.DragonAscentCharging] or false
 end
 
+-- Single source of truth for "does leaving this state need to conserve momentum" — abilities
+-- that hand off into MomentumFalling instead of plain Falling are the ones registered in
+-- MovementConstants.MomentumRetentionByState, so this never drifts out of sync with that table.
+local function fallTargetFor(fromState)
+	if MovementConstants.MomentumRetentionByState[fromState] then
+		return MovementStateDefs.MomentumFalling
+	end
+	return MovementStateDefs.Falling
+end
+
 local vfxFolder = ReplicatedStorage:FindFirstChild("VFX")
 local vaultReticleTemplate = vfxFolder and vfxFolder:FindFirstChild("TreeVault") and vfxFolder.TreeVault:FindFirstChild("Reticle")
 
@@ -204,37 +214,6 @@ function ClientMovementState.start()
 			end
 		end
 
-		-- MomentumFalling forces the Humanoid into Enum.HumanoidStateType.Physics (see
-		-- QinggongController) which disables Roblox's automatic Landed detection — so we drive the
-		-- landing transition ourselves with the same throttled-raycast pattern processParkour uses.
-		local function checkMomentumFallingLanded()
-			if hrp.AssemblyLinearVelocity.Y > 0 then return end -- still ascending, don't land mid-arc
-
-			local groundHit = workspace:Raycast(hrp.Position, Vector3.new(0, -MovementConstants.MomentumFallingGroundCheckDistance, 0), parkourRayParams)
-			if not groundHit then return end
-
-			local fallDuration = tick() - fallStartTime
-			local targetState = MovementStateDefs.LightLanding
-			local duration = MovementConstants.LightLandDuration
-
-			if fallDuration >= MovementConstants.HeavyFallTimeThreshold then
-				targetState = MovementStateDefs.HeavyLanding
-				duration = MovementConstants.HeavyLandDuration
-			end
-
-			local success = fsm:transition(targetState)
-			if success then
-				MovementIntent:FireServer("UpdateState", { targetState = targetState })
-
-				-- [NEW: Task 2.2] Managed GC
-				scheduleTask("Landing", duration, function()
-					if fsm.CurrentState == targetState then
-						evaluateState(true)
-					end
-				end)
-			end
-		end
-
 		-- [NEW: Task 2.1] Throttle variables
 		local parkourUpdateAccumulator = 0
 		local PARKOUR_TICK_RATE = 0.033 -- Scans ~30 times a second instead of 60+ (FPS independent)
@@ -249,8 +228,6 @@ function ClientMovementState.start()
 				-- Only calculate environment if we are actually in a state that utilizes it
 				if fsm.CurrentState == MovementStateDefs.WallHanging or fsm.CurrentState == MovementStateDefs.WallBoost or fsm.CurrentState == MovementStateDefs.WallRunning then
 					processParkour()
-				elseif fsm.CurrentState == MovementStateDefs.MomentumFalling then
-					checkMomentumFallingLanded()
 				end
 			end
 
@@ -303,10 +280,12 @@ function ClientMovementState.start()
 		end)
 		
 		humanoid.StateChanged:Connect(function(oldState, newState)
-			if fsm.CurrentState == MovementStateDefs.TreeIdle or fsm.CurrentState == MovementStateDefs.DragonAscentCharging or fsm.CurrentState == MovementStateDefs.MomentumFalling then
+			if fsm.CurrentState == MovementStateDefs.TreeIdle or fsm.CurrentState == MovementStateDefs.DragonAscentCharging then
 				-- Fully input/timer-driven exit (V/Space for TreeIdle, the charge timer for
-				-- DragonAscentCharging, our own ground raycast for MomentumFalling) — ignore all
-				-- humanoid state churn while locked into any of these.
+				-- DragonAscentCharging) — ignore all humanoid state churn while locked into either.
+				-- MomentumFalling is deliberately NOT in this list: it no longer forces Humanoid into
+				-- Physics state, so native Jumping/Freefall/Landed events must flow through normally
+				-- for landing detection, double jump, wall interactions, etc. to keep working.
 				return
 			end
 
@@ -335,10 +314,11 @@ function ClientMovementState.start()
 				if success then MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Jumping }) end
 				
 			elseif newState == Enum.HumanoidStateType.Freefall then
-				local success = fsm:transition(MovementStateDefs.Falling)
+				local targetState = fallTargetFor(fsm.CurrentState)
+				local success = fsm:transition(targetState)
 				if success then
 					fallStartTime = tick()
-					MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Falling })
+					MovementIntent:FireServer("UpdateState", { targetState = targetState })
 				end
 				
 			elseif newState == Enum.HumanoidStateType.Landed then
@@ -389,9 +369,10 @@ function ClientMovementState.start()
 						-- [NEW: Task 2.2] Managed GC
 						scheduleTask("WallLeap", MovementConstants.WallLeapDuration, function()
 							if fsm.CurrentState == MovementStateDefs.WallLeaping then
-								local fallSuccess = fsm:transition(MovementStateDefs.Falling)
+								local targetState = fallTargetFor(MovementStateDefs.WallLeaping)
+								local fallSuccess = fsm:transition(targetState)
 								if fallSuccess then
-									MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Falling })
+									MovementIntent:FireServer("UpdateState", { targetState = targetState })
 								end
 							end
 						end)
@@ -511,13 +492,14 @@ function ClientMovementState.start()
 
 									-- [NEW: Task 2.2] Managed GC
 									-- Hands off into MomentumFalling instead of standard Falling — QinggongController
-									-- reacts to that transition by reading the constrained velocity, applying the
-									-- drag multiplier, and forcing Humanoid into raw Physics control.
+									-- reacts to that transition by reading the live velocity and applying it as a
+									-- decaying, finite-force horizontal current (see QinggongController.luau).
 									scheduleTask("DragonAscentLaunch", MovementConstants.DragonAscentLaunchDuration, function()
 										if fsm.CurrentState == MovementStateDefs.DragonAscentLaunching then
-											local momentumSuccess = fsm:transition(MovementStateDefs.MomentumFalling)
+											local targetState = fallTargetFor(MovementStateDefs.DragonAscentLaunching)
+											local momentumSuccess = fsm:transition(targetState)
 											if momentumSuccess then
-												MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.MomentumFalling })
+												MovementIntent:FireServer("UpdateState", { targetState = targetState })
 											end
 										end
 									end)
@@ -599,9 +581,10 @@ function ClientMovementState.start()
 							-- [NEW: Task 2.2] Managed GC
 							scheduleTask("Dash", MovementConstants.DashDuration, function()
 								if fsm.CurrentState == MovementStateDefs.AirDashing then
-									local fallSuccess = fsm:transition(MovementStateDefs.Falling)
+									local targetState = fallTargetFor(MovementStateDefs.AirDashing)
+									local fallSuccess = fsm:transition(targetState)
 									if fallSuccess then
-										MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Falling })
+										MovementIntent:FireServer("UpdateState", { targetState = targetState })
 									end
 								end
 							end)
