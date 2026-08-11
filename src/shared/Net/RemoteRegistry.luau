@@ -10,6 +10,7 @@ local REQUIRED_REMOTES = {
 	"MovementIntent",
 	"CombatIntent",
 	"CombatVisuals",
+	"PostureUpdate",
 	-- You will add things like "SpawnRequest", etc., here later
 }
 

@@ -106,6 +106,11 @@ function ClientCombatState.start()
 		local inputBeganConn = UserInputService.InputBegan:Connect(function(input, gameProcessed)
 			if gameProcessed then return end
 
+			-- GUARD CLAUSE: You cannot act if you are stunned or guard broken!
+			if fsm.CurrentState == CombatStateDefs.GuardBroken or fsm.CurrentState == CombatStateDefs.Stunned then
+				return
+			end
+
 			-- M1 (Left Click) - Standard Attack
 			if input.UserInputType == Enum.UserInputType.MouseButton1 then
 				if fsm:transition(CombatStateDefs.M1_Windup) then
@@ -175,9 +180,22 @@ function ClientCombatState.start()
 			end
 		end)
 
+		-- LISTEN FOR SERVER OVERRIDES (Stuns, Guard Breaks)
+		local forceStateConn = CombatIntent.OnClientEvent:Connect(function(action: string, forcedState: string)
+			if action ~= "ForceState" then return end
+
+			-- 1. Immediately cancel any active attacks, feints, or parry timers
+			cancelTask("CombatFlow")
+
+			-- 2. Forcefully override the local state, bypassing the Bouncer
+			fsm.CurrentState = forcedState
+			print(`[CLIENT FSM] Server forcefully applied state: {forcedState}`)
+		end)
+
 		humanoid.Died:Once(function()
 			inputBeganConn:Disconnect()
 			inputEndedConn:Disconnect()
+			forceStateConn:Disconnect()
 
 			for _, t in pairs(activeTasks) do
 				task.cancel(t)

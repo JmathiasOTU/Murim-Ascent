@@ -7,6 +7,7 @@ local QinggongController = require(script.Parent.Parent.Movement.QinggongControl
 local VFXPlaybackController = require(script.Parent.Parent.VFX.VFXPlaybackController)
 local FootstepController = require(script.Parent.Parent.VFX.FootstepController)
 local ClientCombatState = require(script.Parent.Parent.Combat.ClientCombatState)
+local PostureBarUI = require(script.Parent.Parent.UI.HUD.PostureBarUI)
 local ClientBootstrap = {}
 
 function ClientBootstrap.start()
@@ -23,6 +24,7 @@ function ClientBootstrap.start()
 	QinggongController.start()
 	VFXPlaybackController.start()
 	ClientCombatState.start()
+	PostureBarUI.start()
 	return nil
 end
 

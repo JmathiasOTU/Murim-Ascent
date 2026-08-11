@@ -44,18 +44,14 @@ local function handleHitRequest(player: Player, action: string, data: { target: 
 	-- 4. DEFENSE VALIDATION (Parry & Block)
 	local hitResult = ParryValidationService.evaluateDefense(player, targetCharacter, 5)
 
-	if hitResult == "Parried" then
-		-- Calculate the midpoint between the two players for the spark VFX
+	if hitResult == "Parried" or hitResult == "Blocked" then
+		-- Calculate the midpoint between the two players for the clash VFX/SFX
 		local clashPosition = attackerHRP.Position:Lerp(targetHRP.Position, 0.5)
 
-		-- Tell all clients to play the Parry visuals at this exact spot
+		-- Tell all clients to play the matching clash visuals at this exact spot
 		if combatVisualsEvent then
-			combatVisualsEvent:FireAllClients("Parry", clashPosition)
+			combatVisualsEvent:FireAllClients(hitResult == "Parried" and "Parry" or "Block", clashPosition)
 		end
-		return
-	elseif hitResult == "Blocked" then
-		-- Attack was blocked. No health damage, but posture will be drained.
-		-- You can add a "Block" visual fire here later!
 		return
 	elseif hitResult == "Hit" then
 		-- 5. APPLY DAMAGE

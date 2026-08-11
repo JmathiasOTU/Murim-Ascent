@@ -10,16 +10,18 @@ local PostureService = {}
 
 -- LOUD_SNAKE_CASE Constants (Can move to PostureFormulas.luau later!)
 local MAX_POSTURE = 100
-local GUARD_BREAK_DURATION = 1.5
+local GUARD_BREAK_DURATION = 10
 
 -- The Ledger: Tracks Posture (0 to 100)
 local postureData = {}
 
 -- Cached in .start() once RemoteRegistry has been initialized
 local combatVisualsEvent: RemoteEvent? = nil
+local postureUpdateEvent: RemoteEvent? = nil
 
 function PostureService.start()
 	combatVisualsEvent = RemoteRegistry.getEvent("CombatVisuals")
+	postureUpdateEvent = RemoteRegistry.getEvent("PostureUpdate")
 
 	Players.PlayerAdded:Connect(function(player)
 		postureData[player] = 0
@@ -38,6 +40,11 @@ function PostureService.triggerGuardBreak(character: Model, player: Player?)
 	if player then
 		postureData[player] = 0
 		CombatStateService.forceState(player, CombatStateDefs.GuardBroken)
+
+		-- Tell the client to empty their bar!
+		if postureUpdateEvent then
+			postureUpdateEvent:FireClient(player, 0, MAX_POSTURE)
+		end
 	else
 		-- DUMMY FALLBACK for testing in Studio
 		character:SetAttribute("Posture", 0)
@@ -77,7 +84,11 @@ function PostureService.addPostureDamage(character: Model, amount: number)
 		postureData[player] = newPosture
 
 		print(`[POSTURE] {player.Name} took {amount} posture damage. ({newPosture}/{MAX_POSTURE})`)
-		-- TODO: Fire a remote to update their Posture Bar UI!
+
+		-- Update the UI!
+		if postureUpdateEvent then
+			postureUpdateEvent:FireClient(player, newPosture, MAX_POSTURE)
+		end
 
 		if newPosture >= MAX_POSTURE then
 			PostureService.triggerGuardBreak(character, player)

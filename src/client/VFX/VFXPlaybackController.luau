@@ -24,6 +24,25 @@ local PARRY_SOUNDS = {
 	{ id = "rbxassetid://127555742263594", offset = 0 }, -- TODO: tune dead-air offset
 }
 
+local BLOCK_SOUNDS = {
+	{ id = "rbxassetid://71751774673644", offset = 0.30 }, -- TODO: tune dead-air offset
+	{ id = "rbxassetid://123112951688897", offset = 0.11 }, -- TODO: tune dead-air offset
+}
+
+-- Picks a random sound from the given table, fast-forwards past its dead air, and plays it
+local function playRandomSound(soundTable, parent: Instance)
+	local soundData = soundTable[math.random(1, #soundTable)]
+
+	local sound = Instance.new("Sound")
+	sound.SoundId = soundData.id
+	sound.Volume = 1
+	sound.RollOffMaxDistance = 80 -- Fades out from 80 studs away
+	sound.RollOffMinDistance = 10
+	sound.Parent = parent
+	sound.TimePosition = soundData.offset
+	sound:Play()
+end
+
 -- HELPER 1: Play the Burst Particle Effect
 local function playFlashstepVFX(targetCFrame)
 	local vfxTemplate = VFXFolder:FindFirstChild("FlashstepBurst")
@@ -152,19 +171,7 @@ local function onCombatVisual(effectType: string, position: Vector3)
 		clashAnchor.Parent = workspace.Terrain -- Terrain is a great, stable parent for loose attachments
 
 		-- 2. Pick a random sound and play it
-		local soundData = PARRY_SOUNDS[math.random(1, #PARRY_SOUNDS)]
-
-		local clangSound = Instance.new("Sound")
-		clangSound.SoundId = soundData.id
-		clangSound.Volume = 1
-		clangSound.RollOffMaxDistance = 80 -- Fades out from 80 studs away
-		clangSound.RollOffMinDistance = 10
-		clangSound.Parent = clashAnchor
-
-		-- Fast-forward past any dead air so the clang hits instantly
-		clangSound.TimePosition = soundData.offset
-
-		clangSound:Play()
+		playRandomSound(PARRY_SOUNDS, clashAnchor)
 
 		-- 3. Clone and Emit the Visual Sparks
 		local vfxPrefab = VFXFolder:FindFirstChild("ParryVFX")
@@ -183,6 +190,16 @@ local function onCombatVisual(effectType: string, position: Vector3)
 		end
 
 		-- 4. Garbage Collection: Destroy the attachment and sound after 2 seconds
+		Debris:AddItem(clashAnchor, 2)
+
+	elseif effectType == "Block" then
+		-- Just the dull thud - no sparks for a plain block
+		local clashAnchor = Instance.new("Attachment")
+		clashAnchor.Position = position
+		clashAnchor.Parent = workspace.Terrain
+
+		playRandomSound(BLOCK_SOUNDS, clashAnchor)
+
 		Debris:AddItem(clashAnchor, 2)
 	end
 end

@@ -11,6 +11,9 @@ local CombatStateService = {}
 -- The Server's Ledger: Tracks the true state of every player
 local playerStates = {}
 
+-- Cached in .start() once RemoteRegistry has been initialized
+local combatIntentEvent: RemoteEvent? = nil
+
 function CombatStateService.getState(player: Player): string
 	return playerStates[player] or CombatStateDefs.Idle
 end
@@ -21,11 +24,14 @@ function CombatStateService.forceState(player: Player, forcedState: string)
 	print(`[SERVER OVERRIDE] {player.Name} forced into {forcedState}!`)
 
 	-- Tell the client they were forcefully changed so their local FSM updates!
-	-- RemoteRegistry.getEvent("CombatIntent"):FireClient(player, "ForceState", forcedState)
+	if combatIntentEvent then
+		combatIntentEvent:FireClient(player, "ForceState", forcedState)
+	end
 end
 
 function CombatStateService.start()
 	local combatIntent = RemoteRegistry.getEvent("CombatIntent")
+	combatIntentEvent = combatIntent
 
 	Players.PlayerAdded:Connect(function(player)
 		playerStates[player] = CombatStateDefs.Idle
