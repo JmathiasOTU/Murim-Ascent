@@ -1,14 +1,57 @@
 -- src/client/VFX/VFXPlaybackController.luau
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
+local Debris = game:GetService("Debris")
 
 local ClientMovementState = require(script.Parent.Parent.Movement.ClientMovementState)
 local MovementStateDefs = require(ReplicatedStorage.Shared.Movement.MovementStates.MovementStateDefs)
+local RemoteRegistry = require(ReplicatedStorage.Shared.Net.RemoteRegistry)
 
 local VFXPlaybackController = {}
 local started = false
 
--- HELPER 1: Create a static, fading afterimage of the character
+-- Locate our VFX folder
+local AssetsFolder = ReplicatedStorage:WaitForChild("Assets")
+local VFXFolder = AssetsFolder:WaitForChild("VFX")
+
+-- State tracking for continuous VFX
+local activeSprintVFX = nil
+
+-- Array of dictionaries so we can tune the exact start time of each sound
+local PARRY_SOUNDS = {
+	{ id = "rbxassetid://124438514111728", offset = 0.15 }, -- TODO: tune dead-air offset
+	{ id = "rbxassetid://98126623852545", offset = 0.30 }, -- TODO: tune dead-air offset
+	{ id = "rbxassetid://127555742263594", offset = 0 }, -- TODO: tune dead-air offset
+}
+
+-- HELPER 1: Play the Burst Particle Effect
+local function playFlashstepVFX(targetCFrame)
+	local vfxTemplate = VFXFolder:FindFirstChild("FlashstepBurst")
+	if not vfxTemplate then
+		warn("Missing FlashstepBurst in ReplicatedStorage.Assets.VFX")
+		return
+	end
+
+	-- Clone the invisible part holding the particles
+	local vfxClone = vfxTemplate:Clone()
+	vfxClone.CFrame = targetCFrame
+	vfxClone.Parent = workspace
+
+	-- Tell all emitters inside the part to burst
+	for _, emitter in ipairs(vfxClone:GetDescendants()) do
+		if emitter:IsA("ParticleEmitter") then
+			-- You can change '20' to however many particles you want to emit at once
+			emitter:Emit(5)
+		end
+	end
+
+	-- Clean up the part after 2 seconds (gives particles time to fade away)
+	task.delay(2, function()
+		vfxClone:Destroy()
+	end)
+end
+
+-- HELPER 2: Create a static, fading afterimage of the character
 local function spawnAfterImage(character)
 	local hrp = character:FindFirstChild("HumanoidRootPart")
 	if not hrp then return end
@@ -30,7 +73,7 @@ local function spawnAfterImage(character)
 
 			-- Stylize the afterimage (Optional: Change to Enum.Material.Neon for a glowing trail)
 			clonePart.Material = Enum.Material.ForceField
-			clonePart.Color = Color3.new(0.7, 0.7, 0.7) -- Greyish Qi color
+			clonePart.Color = Color3.new(0.7, 0.7, 0.7) -- Light gray color
 
 			clonePart.Parent = cloneModel
 
@@ -48,7 +91,7 @@ local function spawnAfterImage(character)
 	end)
 end
 
--- HELPER 2: Safely toggle character visibility without breaking custom accessories
+-- HELPER 3: Safely toggle character visibility without breaking custom accessories
 local function setCharacterVisibility(character, isVisible)
 	for _, instance in ipairs(character:GetDescendants()) do
 		-- Covers limbs/accessories (BasePart) and the character's face (Decal)
@@ -66,25 +109,121 @@ local function setCharacterVisibility(character, isVisible)
 	end
 end
 
+-- HELPER 4: Toggle continuous Sprinting VFX
+local function toggleSprintVFX(hrp, isEnabled)
+	if isEnabled then
+		if activeSprintVFX then return end -- Already playing
+
+		local vfxTemplate = VFXFolder:FindFirstChild("SprintVFX")
+		if not vfxTemplate then
+			warn("Missing SprintVFX Attachment in ReplicatedStorage.Assets.VFX")
+			return
+		end
+
+		-- Clone the attachment directly into the HumanoidRootPart
+		activeSprintVFX = vfxTemplate:Clone()
+		activeSprintVFX.Parent = hrp
+
+	elseif activeSprintVFX then
+		-- Gracefully disable emitters so the trail doesn't vanish instantly
+		for _, emitter in ipairs(activeSprintVFX:GetDescendants()) do
+			if emitter:IsA("ParticleEmitter") or emitter:IsA("Trail") then
+				emitter.Enabled = false
+			end
+		end
+
+		-- Cache the reference and clear the variable immediately so a new sprint can start
+		local vfxToDestroy = activeSprintVFX
+		activeSprintVFX = nil
+
+		-- Give particles 2 seconds to fade out before destroying the attachment
+		task.delay(2, function()
+			vfxToDestroy:Destroy()
+		end)
+	end
+end
+
+-- HELPER 5: React to server-broadcast combat clashes (parry clang + sparks)
+local function onCombatVisual(effectType: string, position: Vector3)
+	if effectType == "Parry" then
+		-- 1. Create an invisible anchor at the clash position
+		local clashAnchor = Instance.new("Attachment")
+		clashAnchor.Position = position
+		clashAnchor.Parent = workspace.Terrain -- Terrain is a great, stable parent for loose attachments
+
+		-- 2. Pick a random sound and play it
+		local soundData = PARRY_SOUNDS[math.random(1, #PARRY_SOUNDS)]
+
+		local clangSound = Instance.new("Sound")
+		clangSound.SoundId = soundData.id
+		clangSound.Volume = 1
+		clangSound.RollOffMaxDistance = 80 -- Fades out from 80 studs away
+		clangSound.RollOffMinDistance = 10
+		clangSound.Parent = clashAnchor
+
+		-- Fast-forward past any dead air so the clang hits instantly
+		clangSound.TimePosition = soundData.offset
+
+		clangSound:Play()
+
+		-- 3. Clone and Emit the Visual Sparks
+		local vfxPrefab = VFXFolder:FindFirstChild("ParryVFX")
+		if vfxPrefab then
+			local vfxClone = vfxPrefab:Clone()
+			vfxClone.Parent = clashAnchor
+
+			for _, emitter in ipairs(vfxClone:GetChildren()) do
+				if emitter:IsA("ParticleEmitter") then
+					-- Emits a burst of particles based on what you set in Studio
+					emitter:Emit(emitter:GetAttribute("EmitCount") or 15)
+				end
+			end
+		else
+			warn("Missing ParryVFX Attachment in ReplicatedStorage.Assets.VFX")
+		end
+
+		-- 4. Garbage Collection: Destroy the attachment and sound after 2 seconds
+		Debris:AddItem(clashAnchor, 2)
+	end
+end
+
 
 function VFXPlaybackController.start()
 	if started then return end
 	started = true
 
+	local combatVisuals = RemoteRegistry.getEvent("CombatVisuals")
+	combatVisuals.OnClientEvent:Connect(onCombatVisual)
+
 	ClientMovementState.FSMReady:Connect(function(fsm, character)
 		local humanoid = character:WaitForChild("Humanoid")
+		local hrp = character:WaitForChild("HumanoidRootPart")
+
+		-- Clean up state variable on a new spawn
+		activeSprintVFX = nil
 
 		local fsmConnection = fsm.StateChanged:Connect(function(oldState, newState)
 
-			-- 1. ENTERING FLASHSTEP: Spawn the ghost and go invisible
+			-- 1. ENTERING FLASHSTEP: Burst where we started, spawn the ghost, and go invisible
 			if newState == MovementStateDefs.Flashstepping then
+				playFlashstepVFX(hrp.CFrame)
 				spawnAfterImage(character)
 				setCharacterVisibility(character, false)
 			end
 
-			-- 2. EXITING FLASHSTEP: Reappear immediately
+			-- 2. EXITING FLASHSTEP: Burst where we reappeared
 			if oldState == MovementStateDefs.Flashstepping and newState ~= MovementStateDefs.Flashstepping then
+				playFlashstepVFX(hrp.CFrame)
 				setCharacterVisibility(character, true)
+			end
+
+			-- 3. SPRINTING: Toggle the continuous trail on/off
+			if newState == MovementStateDefs.Sprinting then
+				toggleSprintVFX(hrp, true)
+			end
+
+			if oldState == MovementStateDefs.Sprinting and newState ~= MovementStateDefs.Sprinting then
+				toggleSprintVFX(hrp, false)
 			end
 
 		end)
@@ -92,6 +231,7 @@ function VFXPlaybackController.start()
 		humanoid.Died:Once(function()
 			-- Safety fallback: make sure the corpse is visible if they somehow die mid-dash
 			setCharacterVisibility(character, true)
+			toggleSprintVFX(hrp, false)
 
 			if fsmConnection then
 				fsmConnection:Disconnect()

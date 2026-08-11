@@ -8,7 +8,9 @@ local cachedRemotes = {}
 -- Data-Driven list of every remote your game uses
 local REQUIRED_REMOTES = {
 	"MovementIntent",
-	-- You will add things like "CombatIntent", "SpawnRequest", etc., here later
+	"CombatIntent",
+	"CombatVisuals",
+	-- You will add things like "SpawnRequest", etc., here later
 }
 
 -- 1. SERVER ONLY: Creates the folder and the physical RemoteEvents

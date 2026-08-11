@@ -6,6 +6,7 @@ local MovementPhysicsController = require(script.Parent.Parent.Movement.Movement
 local QinggongController = require(script.Parent.Parent.Movement.QinggongController)
 local VFXPlaybackController = require(script.Parent.Parent.VFX.VFXPlaybackController)
 local FootstepController = require(script.Parent.Parent.VFX.FootstepController)
+local ClientCombatState = require(script.Parent.Parent.Combat.ClientCombatState)
 local ClientBootstrap = {}
 
 function ClientBootstrap.start()
@@ -21,6 +22,7 @@ function ClientBootstrap.start()
 	MovementPhysicsController.start()
 	QinggongController.start()
 	VFXPlaybackController.start()
+	ClientCombatState.start()
 	return nil
 end
 
