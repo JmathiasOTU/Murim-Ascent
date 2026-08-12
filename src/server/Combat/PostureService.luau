@@ -5,12 +5,12 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CombatStateService = require(script.Parent.CombatStateService)
 local CombatStateDefs = require(ReplicatedStorage.Shared.Combat.CombatStates.CombatStateDefs)
 local RemoteRegistry = require(ReplicatedStorage.Shared.Net.RemoteRegistry)
+local CombatConstants = require(ReplicatedStorage.Shared.Combat.CombatConstants)
 
 local PostureService = {}
 
 -- LOUD_SNAKE_CASE Constants (Can move to PostureFormulas.luau later!)
 local MAX_POSTURE = 100
-local GUARD_BREAK_DURATION = 10
 
 -- The Ledger: Tracks Posture (0 to 100)
 local postureData = {}
@@ -57,8 +57,8 @@ function PostureService.triggerGuardBreak(character: Model, player: Player?)
 		combatVisualsEvent:FireAllClients("GuardBreak", hrp.Position)
 	end
 
-	-- 3. The 1.5 Second Stun Timer
-	task.delay(GUARD_BREAK_DURATION, function()
+	-- 3. The Guard Break Stun Timer
+	task.delay(CombatConstants.GuardBreakDuration, function()
 		if player then
 			-- Only reset to Idle if they are STILL guard broken (didn't get killed during the stun)
 			if CombatStateService.getState(player) == CombatStateDefs.GuardBroken then

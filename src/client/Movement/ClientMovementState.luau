@@ -13,10 +13,20 @@ local MovementConstants = require(ReplicatedStorage.Shared.Movement.MovementCons
 local MovementValidationUtils = require(ReplicatedStorage.Shared.Movement.MovementValidationUtils)
 local RemoteRegistry = require(ReplicatedStorage.Shared.Net.RemoteRegistry)
 local ParkourRaycastUtils = require(script.Parent.ParkourRaycastUtils)
+local ClientCombatState = require(script.Parent.Parent.Combat.ClientCombatState)
+local CombatStateDefs = require(ReplicatedStorage.Shared.Combat.CombatStates.CombatStateDefs)
 
 local ClientMovementState = {}
 ClientMovementState.FSMReady = LemonSignal.new()
 ClientMovementState.CurrentFSM = nil
+
+-- The Combat FSM overrides movement during stuns/guard breaks; this keeps
+-- W/Dash/etc. from fighting the WalkSpeed freeze CombatState just applied
+local function isCombatLocked(): boolean
+	local combatFSM = ClientCombatState.CurrentFSM
+	return combatFSM ~= nil
+		and (combatFSM.CurrentState == CombatStateDefs.GuardBroken or combatFSM.CurrentState == CombatStateDefs.Stunned)
+end
 
 function ClientMovementState.start()
 	local player = Players.LocalPlayer
@@ -69,6 +79,8 @@ function ClientMovementState.start()
 		parkourRayParams.IgnoreWater = true
 
 		local function evaluateState(forceExitAction)
+			if isCombatLocked() then return end
+
 			-- ADDED: LightLanding to the protected whitelist
 			if not forceExitAction and (fsm.CurrentState == MovementStateDefs.Dashing or fsm.CurrentState == MovementStateDefs.Sliding or fsm.CurrentState == MovementStateDefs.LedgeVaulting or fsm.CurrentState == MovementStateDefs.WallBoost or fsm.CurrentState == MovementStateDefs.WallRunning or fsm.CurrentState == MovementStateDefs.WallLeaping or fsm.CurrentState == MovementStateDefs.HeavyLanding or fsm.CurrentState == MovementStateDefs.LightLanding) then return end
 
@@ -251,6 +263,8 @@ function ClientMovementState.start()
 
 		ContextActionService:BindActionAtPriority("ParkourSpacebar", function(actionName, inputState, inputObject)
 			if inputState == Enum.UserInputState.Begin then
+				if isCombatLocked() then return Enum.ContextActionResult.Pass end
+
 				local state = fsm.CurrentState
 
 				if state == MovementStateDefs.WallRunning then
@@ -340,6 +354,7 @@ function ClientMovementState.start()
 
 		ContextActionService:BindAction("ToggleCrouch", function(actionName, inputState, inputObject)
 			if inputState == Enum.UserInputState.Begin then
+				if isCombatLocked() then return Enum.ContextActionResult.Pass end
 
 				if fsm.CurrentState == MovementStateDefs.WallHanging then
 					local success = fsm:transition(MovementStateDefs.Falling)
@@ -393,6 +408,8 @@ function ClientMovementState.start()
 
 		ContextActionService:BindAction("TriggerDash", function(actionName, inputState, inputObject)
 			if inputState == Enum.UserInputState.Begin then
+				if isCombatLocked() then return Enum.ContextActionResult.Pass end
+
 				local now = os.clock()
 
 				-- ADDED: DoubleJumping and WallLeaping as valid airborne dash states
