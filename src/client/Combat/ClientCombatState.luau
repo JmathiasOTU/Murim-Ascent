@@ -13,20 +13,21 @@ local RemoteRegistry = require(ReplicatedStorage.Shared.Net.RemoteRegistry)
 local MovementConstants = require(ReplicatedStorage.Shared.Movement.MovementConstants)
 local CombatConstants = require(ReplicatedStorage.Shared.Combat.CombatConstants)
 local WeaponDefinitions = require(ReplicatedStorage.Shared.Combat.WeaponDefinitions)
+local WeaponCriticalRegistry = require(ReplicatedStorage.Shared.Combat.WeaponCriticals.WeaponCriticalRegistry)
 
 local ClientCombatState = {}
 ClientCombatState.FSMReady = LemonSignal.new()
 ClientCombatState.CurrentFSM = nil
 
 -- The Sweeping Hitbox: cosmetic only. The server runs the authoritative version of this
--- same sweep off its own validated M1_Active transition (HitRegistrationService.luau) and
+-- same sweep off its own validated *_Active transition (HitRegistrationService.luau) and
 -- decides who got hit on its own — this client copy exists purely to show the graybox
--- visualizer to the swinging player, not to report hits.
-local function performSweepingHitbox(character: Model, fsm, weaponName: string)
+-- visualizer to the swinging player, not to report hits. `def` is whatever hitbox data the
+-- caller already resolved (a WeaponDefinitions entry for M1, WeaponCriticalRegistry for
+-- Critical); `activeStateName` is which *_Active state this sweep belongs to.
+local function performSweepingHitbox(character: Model, fsm, weaponName: string, def, activeStateName: string)
 	local hrp = character:FindFirstChild("HumanoidRootPart")
 	if not hrp then return end
-
-	local def = WeaponDefinitions[weaponName] or WeaponDefinitions.Default
 
 	local overlapParams = OverlapParams.new()
 	overlapParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -40,7 +41,7 @@ local function performSweepingHitbox(character: Model, fsm, weaponName: string)
 		elapsedTime += dt
 
 		-- Stop sweeping once this weapon's active window ends, or if we got interrupted out of it
-		if elapsedTime >= def.ActiveTime or fsm.CurrentState ~= CombatStateDefs.M1_Active then
+		if elapsedTime >= def.ActiveTime or fsm.CurrentState ~= activeStateName then
 			sweepConnection:Disconnect()
 			return
 		end
@@ -103,6 +104,10 @@ function ClientCombatState.start()
 		-- TODO: pull this from the Inventory/Equip system once it exists
 		local equippedWeapon = "DemonicGreatsword"
 
+		-- Client-side mirror of the server's cooldown gate, purely so we don't spam a
+		-- doomed request at the server every frame C is held; the server enforces the real one
+		local lastCriticalTime = 0
+
 		local function cancelTask(taskName: string)
 			if activeTasks[taskName] then
 				task.cancel(activeTasks[taskName])
@@ -122,8 +127,9 @@ function ClientCombatState.start()
 		-- and tell the server so it can validate against its own ledger
 		fsm.StateChanged:Connect(function(oldState, newState)
 			print(`[COMBAT FSM] {oldState} -> {newState}`)
-			-- weaponName only matters to the server on the M1_Windup transition (that's
-			-- where it locks the swing's weapon in), but it's harmless to include always
+			-- weaponName only matters to the server on the M1_Windup/Critical_Windup
+			-- transitions (that's where it locks the swing's weapon in and, for Critical,
+			-- checks the cooldown), but it's harmless to include always
 			CombatIntent:FireServer("UpdateState", { targetState = newState, weaponName = equippedWeapon })
 		end)
 
@@ -151,7 +157,7 @@ function ClientCombatState.start()
 					if fsm:transition(CombatStateDefs.M1_Active) then
 
 						-- FIRES THE HITBOX EXACTLY AS THE STATE BECOMES ACTIVE
-						performSweepingHitbox(character, fsm, equippedWeapon)
+						performSweepingHitbox(character, fsm, equippedWeapon, weaponDef, CombatStateDefs.M1_Active)
 
 						scheduleTask("CombatFlow", weaponDef.ActiveTime, function()
 							if fsm:transition(CombatStateDefs.M1_Endlag) then
@@ -187,6 +193,35 @@ function ClientCombatState.start()
 			end
 		end
 
+		-- Runs a weapon Critical: a heavier, telegraphed, per-weapon cooldown-gated finisher.
+		-- Only usable from Idle — unlike M1, it doesn't chain off a combo or buffer.
+		local function executeCritical()
+			local criticalDef = WeaponCriticalRegistry[equippedWeapon] or WeaponCriticalRegistry.Default
+
+			if os.clock() - lastCriticalTime < criticalDef.Cooldown then return end
+
+			if fsm:transition(CombatStateDefs.Critical_Windup) then
+				lastCriticalTime = os.clock()
+				print(`[COMBAT FSM] Critical with {equippedWeapon}`)
+
+				scheduleTask("CombatFlow", criticalDef.WindupTime, function()
+					if fsm:transition(CombatStateDefs.Critical_Active) then
+
+						performSweepingHitbox(character, fsm, equippedWeapon, criticalDef, CombatStateDefs.Critical_Active)
+
+						scheduleTask("CombatFlow", criticalDef.ActiveTime, function()
+							if fsm:transition(CombatStateDefs.Critical_Endlag) then
+								scheduleTask("CombatFlow", criticalDef.EndlagTime, function()
+									fsm:transition(CombatStateDefs.Idle)
+								end)
+							end
+						end)
+
+					end
+				end)
+			end
+		end
+
 		-- ==========================================
 		-- INPUT HANDLING (The Graybox Test)
 		-- ==========================================
@@ -218,6 +253,13 @@ function ClientCombatState.start()
 				-- Anything else (Blocking, Feinting, ...) just isn't a valid time to swing.
 				if state == CombatStateDefs.Idle or state == CombatStateDefs.Parrying then
 					executeSwing()
+				end
+			end
+
+			-- C (Critical) - Weapon-specific finisher, only from Idle
+			if input.KeyCode == Enum.KeyCode.C then
+				if fsm.CurrentState == CombatStateDefs.Idle then
+					executeCritical()
 				end
 			end
 

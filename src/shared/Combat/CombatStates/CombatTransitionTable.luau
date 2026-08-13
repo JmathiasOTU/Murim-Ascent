@@ -6,6 +6,7 @@ return {
 	[CombatStateDefs.Idle] = {
 		[CombatStateDefs.M1_Windup] = true,
 		[CombatStateDefs.Parrying] = true,    -- You always Parry first when pressing block
+		[CombatStateDefs.Critical_Windup] = true,
 		[CombatStateDefs.Stunned] = true,
 		[CombatStateDefs.GuardBroken] = true,
 	},
@@ -57,7 +58,23 @@ return {
 	},
 	
 	[CombatStateDefs.GuardBroken] = {
-		[CombatStateDefs.Idle] = true,        
-		[CombatStateDefs.Stunned] = true,     
-	}
+		[CombatStateDefs.Idle] = true,
+		[CombatStateDefs.Stunned] = true,
+	},
+
+	[CombatStateDefs.Critical_Windup] = {
+		[CombatStateDefs.Critical_Active] = true,
+		[CombatStateDefs.Stunned] = true,       -- can be interrupted mid-telegraph
+	},
+
+	[CombatStateDefs.Critical_Active] = {
+		[CombatStateDefs.Critical_Endlag] = true,
+		[CombatStateDefs.Stunned] = true,
+	},
+
+	[CombatStateDefs.Critical_Endlag] = {
+		[CombatStateDefs.Idle] = true,
+		[CombatStateDefs.Stunned] = true,
+		[CombatStateDefs.GuardBroken] = true,   -- big whiff punish window
+	},
 }

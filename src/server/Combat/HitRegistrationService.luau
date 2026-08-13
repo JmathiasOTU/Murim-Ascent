@@ -9,6 +9,7 @@ local CombatStateDefs = require(ReplicatedStorage.Shared.Combat.CombatStates.Com
 local RemoteRegistry = require(ReplicatedStorage.Shared.Net.RemoteRegistry)
 local CombatConstants = require(ReplicatedStorage.Shared.Combat.CombatConstants)
 local WeaponDefinitions = require(ReplicatedStorage.Shared.Combat.WeaponDefinitions)
+local WeaponCriticalRegistry = require(ReplicatedStorage.Shared.Combat.WeaponCriticals.WeaponCriticalRegistry)
 
 local HitRegistrationService = {}
 
@@ -18,13 +19,15 @@ local combatVisualsEvent: RemoteEvent? = nil
 -- Resolves a single swing landing on a single target: defense check, then damage/stun.
 -- This is the server's only source of truth for "did this hit land" — the client's
 -- own sweep (ClientCombatState.luau) is cosmetic only and never reported here.
-local function resolveHit(attacker: Player, attackerCharacter: Model, targetCharacter: Model, weaponDef, weaponName: string)
+-- `hitboxData` is either a WeaponDefinitions entry (M1) or a WeaponCriticalRegistry
+-- entry (Critical) — both carry BaseDamage; Critical also carries a heavier StunDuration.
+local function resolveHit(attacker: Player, attackerCharacter: Model, targetCharacter: Model, hitboxData, weaponName: string)
 	local hrp = attackerCharacter:FindFirstChild("HumanoidRootPart")
 	local targetHRP = targetCharacter:FindFirstChild("HumanoidRootPart")
 	local targetHumanoid = targetCharacter:FindFirstChild("Humanoid")
 	if not hrp or not targetHRP or not targetHumanoid then return end
 
-	local hitResult = ParryValidationService.evaluateDefense(attacker, targetCharacter, weaponDef.BaseDamage)
+	local hitResult = ParryValidationService.evaluateDefense(attacker, targetCharacter, hitboxData.BaseDamage)
 
 	if hitResult == "Parried" or hitResult == "Blocked" then
 		local clashPosition = hrp.Position:Lerp(targetHRP.Position, 0.5)
@@ -35,11 +38,11 @@ local function resolveHit(attacker: Player, attackerCharacter: Model, targetChar
 	end
 
 	-- Clean Hit
-	targetHumanoid:TakeDamage(weaponDef.BaseDamage)
-	print(`[SERVER HIT] {attacker.Name} damaged {targetCharacter.Name} for {weaponDef.BaseDamage} HP using {weaponName}!`)
+	targetHumanoid:TakeDamage(hitboxData.BaseDamage)
+	print(`[SERVER HIT] {attacker.Name} damaged {targetCharacter.Name} for {hitboxData.BaseDamage} HP using {weaponName}!`)
 
 	local targetPlayer = Players:GetPlayerFromCharacter(targetCharacter)
-	local stunDuration = CombatConstants.HitstunDuration
+	local stunDuration = hitboxData.StunDuration or CombatConstants.HitstunDuration
 
 	if targetPlayer then
 		CombatStateService.forceTimedState(targetPlayer, CombatStateDefs.Stunned, stunDuration)
@@ -55,15 +58,16 @@ local function resolveHit(attacker: Player, attackerCharacter: Model, targetChar
 	end
 end
 
--- The actual hitbox: sweeps every Heartbeat for the weapon's ActiveTime window,
--- following the attacker's HumanoidRootPart. Runs entirely server-side so the
--- client never gets to claim who it hit — it can only claim it started swinging.
-local function performServerHitboxSweep(attacker: Player, weaponName: string)
+-- The actual hitbox: sweeps every Heartbeat for hitboxData.ActiveTime seconds, following
+-- the attacker's HumanoidRootPart. Runs entirely server-side so the client never gets to
+-- claim who it hit — it can only claim it started swinging. Shared by both M1 (fired off
+-- M1_Active with WeaponDefinitions) and Critical (fired off Critical_Active with
+-- WeaponCriticalRegistry) — `activeStateName` is which of those this sweep belongs to, so
+-- it aborts correctly if the attacker gets interrupted out of it.
+local function performServerHitboxSweep(attacker: Player, hitboxData, activeStateName: string, weaponName: string)
 	local character = attacker.Character
 	local hrp = character and character:FindFirstChild("HumanoidRootPart")
 	if not character or not hrp then return end
-
-	local weaponDef = WeaponDefinitions[weaponName] or WeaponDefinitions.Default
 
 	local overlapParams = OverlapParams.new()
 	overlapParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -88,13 +92,13 @@ local function performServerHitboxSweep(attacker: Player, weaponName: string)
 
 		-- Stop once this weapon's active window ends, or the attacker got interrupted
 		-- (stunned, parried, guard-broken) out of the active state mid-swing
-		if elapsedTime >= weaponDef.ActiveTime or CombatStateService.getState(attacker) ~= CombatStateDefs.M1_Active then
+		if elapsedTime >= hitboxData.ActiveTime or CombatStateService.getState(attacker) ~= activeStateName then
 			stop()
 			return
 		end
 
-		local hitboxCFrame = hrp.CFrame * weaponDef.HitboxOffset
-		local partsInHitbox = workspace:GetPartBoundsInBox(hitboxCFrame, weaponDef.HitboxSize, overlapParams)
+		local hitboxCFrame = hrp.CFrame * hitboxData.HitboxOffset
+		local partsInHitbox = workspace:GetPartBoundsInBox(hitboxCFrame, hitboxData.HitboxSize, overlapParams)
 
 		for _, part in ipairs(partsInHitbox) do
 			local targetCharacter = part.Parent
@@ -108,7 +112,7 @@ local function performServerHitboxSweep(attacker: Player, weaponName: string)
 				and not hitTargets[targetCharacter]
 			then
 				hitTargets[targetCharacter] = true
-				resolveHit(attacker, character, targetCharacter, weaponDef, weaponName)
+				resolveHit(attacker, character, targetCharacter, hitboxData, weaponName)
 			end
 		end
 	end)
@@ -124,8 +128,15 @@ function HitRegistrationService.start()
 	-- The sweep is driven by the server's own validated FSM transitions, not by
 	-- anything the client reports after the fact
 	CombatStateService.StateValidated:Connect(function(player, _oldState, newState)
-		if newState ~= CombatStateDefs.M1_Active then return end
-		performServerHitboxSweep(player, CombatStateService.getWeapon(player))
+		local weaponName = CombatStateService.getWeapon(player)
+
+		if newState == CombatStateDefs.M1_Active then
+			local weaponDef = WeaponDefinitions[weaponName] or WeaponDefinitions.Default
+			performServerHitboxSweep(player, weaponDef, CombatStateDefs.M1_Active, weaponName)
+		elseif newState == CombatStateDefs.Critical_Active then
+			local criticalDef = WeaponCriticalRegistry[weaponName] or WeaponCriticalRegistry.Default
+			performServerHitboxSweep(player, criticalDef, CombatStateDefs.Critical_Active, weaponName)
+		end
 	end)
 
 	print("HitRegistrationService initialized.")
