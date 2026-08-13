@@ -5,17 +5,31 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CombatStateDefs = require(ReplicatedStorage.Shared.Combat.CombatStates.CombatStateDefs)
 local CombatTransitionTable = require(ReplicatedStorage.Shared.Combat.CombatStates.CombatTransitionTable)
 local RemoteRegistry = require(ReplicatedStorage.Shared.Net.RemoteRegistry)
+local WeaponDefinitions = require(ReplicatedStorage.Shared.Combat.WeaponDefinitions)
+local LemonSignal = require(ReplicatedStorage.Shared.StateMachine.LemonSignal)
 
 local CombatStateService = {}
 
+-- Fires (player, oldState, newState) after every server-validated transition.
+-- HitRegistrationService listens for M1_Active here to know when to sweep.
+CombatStateService.StateValidated = LemonSignal.new()
+
 -- The Server's Ledger: Tracks the true state of every player
 local playerStates = {}
+
+-- Which weapon a swing was declared with, locked in at M1_Windup so a client
+-- can't switch weapons mid-swing to dodge the reach/damage it started with
+local playerWeapons = {}
 
 -- Cached in .start() once RemoteRegistry has been initialized
 local combatIntentEvent: RemoteEvent? = nil
 
 function CombatStateService.getState(player: Player): string
 	return playerStates[player] or CombatStateDefs.Idle
+end
+
+function CombatStateService.getWeapon(player: Player): string
+	return playerWeapons[player] or "Default"
 end
 
 -- Allows the server to forcefully override a player's state (Stuns, Guard Breaks)
@@ -53,11 +67,13 @@ function CombatStateService.start()
 		player.CharacterAdded:Connect(function()
 			-- Reset the ledger on every spawn so a mid-combo death can't strand it
 			playerStates[player] = CombatStateDefs.Idle
+			playerWeapons[player] = nil
 		end)
 	end)
 
 	Players.PlayerRemoving:Connect(function(player)
 		playerStates[player] = nil
+		playerWeapons[player] = nil
 	end)
 
 	-- The Bouncer: Listens to Client Intents
@@ -73,8 +89,16 @@ function CombatStateService.start()
 			playerStates[player] = requestedState
 			print(`[SERVER COMBAT] Validated {player.Name} -> {requestedState}`)
 
-			-- TODO: If state is M1_Windup, maybe slow their walkspeed?
+			-- Lock in the swing's weapon here, at the start of Windup, so the sweep that
+			-- fires later off M1_Active can't be tricked into using a weapon swapped in after
+			if requestedState == CombatStateDefs.M1_Windup then
+				local weaponName = data.weaponName
+				playerWeapons[player] = (weaponName and WeaponDefinitions[weaponName]) and weaponName or "Default"
+			end
+
 			-- TODO: If state is Parrying, maybe apply an invincibility tag?
+
+			CombatStateService.StateValidated:Fire(player, currentState, requestedState)
 		else
 			-- EXPLOIT / DESYNC DETECTED
 			warn(`[SERVER COMBAT] Rejected {player.Name}! Cannot go {currentState} -> {tostring(requestedState)}`)

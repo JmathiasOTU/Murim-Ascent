@@ -1,6 +1,7 @@
 -- src/server/Combat/HitRegistrationService.luau
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local CombatStateService = require(script.Parent.CombatStateService)
 local ParryValidationService = require(script.Parent.ParryValidationService)
@@ -14,77 +15,119 @@ local HitRegistrationService = {}
 -- Cached in .start() once RemoteRegistry has been initialized
 local combatVisualsEvent: RemoteEvent? = nil
 
-local function handleHitRequest(player: Player, action: string, data: { target: Model?, weaponName: string? }?)
-	if action ~= "Hit" then return end
-
-	-- 1. Ensure target exists and has a humanoid
-	local targetCharacter = data and data.target
-	if not targetCharacter then return end
-
-	local weaponName = (data and data.weaponName) or "Default"
-	-- We grab the data for the exact weapon the client claimed to swing
-	local weaponDef = WeaponDefinitions[weaponName] or WeaponDefinitions.Default
-
-	local targetHumanoid = targetCharacter:FindFirstChild("Humanoid")
+-- Resolves a single swing landing on a single target: defense check, then damage/stun.
+-- This is the server's only source of truth for "did this hit land" — the client's
+-- own sweep (ClientCombatState.luau) is cosmetic only and never reported here.
+local function resolveHit(attacker: Player, attackerCharacter: Model, targetCharacter: Model, weaponDef, weaponName: string)
+	local hrp = attackerCharacter:FindFirstChild("HumanoidRootPart")
 	local targetHRP = targetCharacter:FindFirstChild("HumanoidRootPart")
-	local attackerHRP = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	local targetHumanoid = targetCharacter:FindFirstChild("Humanoid")
+	if not hrp or not targetHRP or not targetHumanoid then return end
 
-	if not targetHumanoid or not targetHRP or not attackerHRP then return end
-
-	-- 2. STATE VALIDATION: Is the attacker actually swinging right now?
-	local attackerState = CombatStateService.getState(player)
-	if attackerState ~= CombatStateDefs.M1_Active then
-		warn(`[HIT REJECTED] {player.Name} tried to hit while in state: {attackerState}`)
-		return
-	end
-
-	-- 3. DYNAMIC DISTANCE VALIDATION: Are they close enough for this weapon? (Reach hack prevention)
-	local distance = (attackerHRP.Position - targetHRP.Position).Magnitude
-	if distance > weaponDef.MaxServerRange then
-		warn(`[HIT REJECTED] {player.Name} tried to hit from too far away! ({distance} studs vs Max {weaponDef.MaxServerRange})`)
-		return
-	end
-
-	-- 4. DEFENSE VALIDATION (Parry & Block) — dynamic damage so blocking heavy weapons costs more posture
-	local hitResult = ParryValidationService.evaluateDefense(player, targetCharacter, weaponDef.BaseDamage)
+	local hitResult = ParryValidationService.evaluateDefense(attacker, targetCharacter, weaponDef.BaseDamage)
 
 	if hitResult == "Parried" or hitResult == "Blocked" then
-		-- Calculate the midpoint between the two players for the clash VFX/SFX
-		local clashPosition = attackerHRP.Position:Lerp(targetHRP.Position, 0.5)
-
-		-- Tell all clients to play the matching clash visuals at this exact spot
+		local clashPosition = hrp.Position:Lerp(targetHRP.Position, 0.5)
 		if combatVisualsEvent then
 			combatVisualsEvent:FireAllClients(hitResult == "Parried" and "Parry" or "Block", clashPosition)
 		end
 		return
-	elseif hitResult == "Hit" then
-		-- 5. APPLY DYNAMIC DAMAGE
-		targetHumanoid:TakeDamage(weaponDef.BaseDamage)
-		print(`[SERVER HIT] {player.Name} damaged {targetCharacter.Name} for {weaponDef.BaseDamage} HP using {weaponName}!`)
+	end
 
-		-- 6. APPLY HITSTUN
-		local targetPlayer = Players:GetPlayerFromCharacter(targetCharacter)
-		local stunDuration = CombatConstants.HitstunDuration
+	-- Clean Hit
+	targetHumanoid:TakeDamage(weaponDef.BaseDamage)
+	print(`[SERVER HIT] {attacker.Name} damaged {targetCharacter.Name} for {weaponDef.BaseDamage} HP using {weaponName}!`)
 
-		if targetPlayer then
-			CombatStateService.forceTimedState(targetPlayer, CombatStateDefs.Stunned, stunDuration)
-		else
-			-- DUMMY FALLBACK
-			targetCharacter:SetAttribute("CombatState", CombatStateDefs.Stunned)
-			print(`[STUN] Dummy is Stunned for {stunDuration}s!`)
-			task.delay(stunDuration, function()
-				if targetCharacter:GetAttribute("CombatState") == CombatStateDefs.Stunned then
-					targetCharacter:SetAttribute("CombatState", CombatStateDefs.Idle)
-				end
-			end)
+	local targetPlayer = Players:GetPlayerFromCharacter(targetCharacter)
+	local stunDuration = CombatConstants.HitstunDuration
+
+	if targetPlayer then
+		CombatStateService.forceTimedState(targetPlayer, CombatStateDefs.Stunned, stunDuration)
+	else
+		-- DUMMY FALLBACK
+		targetCharacter:SetAttribute("CombatState", CombatStateDefs.Stunned)
+		print(`[STUN] Dummy is Stunned for {stunDuration}s!`)
+		task.delay(stunDuration, function()
+			if targetCharacter:GetAttribute("CombatState") == CombatStateDefs.Stunned then
+				targetCharacter:SetAttribute("CombatState", CombatStateDefs.Idle)
+			end
+		end)
+	end
+end
+
+-- The actual hitbox: sweeps every Heartbeat for the weapon's ActiveTime window,
+-- following the attacker's HumanoidRootPart. Runs entirely server-side so the
+-- client never gets to claim who it hit — it can only claim it started swinging.
+local function performServerHitboxSweep(attacker: Player, weaponName: string)
+	local character = attacker.Character
+	local hrp = character and character:FindFirstChild("HumanoidRootPart")
+	if not character or not hrp then return end
+
+	local weaponDef = WeaponDefinitions[weaponName] or WeaponDefinitions.Default
+
+	local overlapParams = OverlapParams.new()
+	overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+	overlapParams.FilterDescendantsInstances = { character }
+
+	local hitTargets = {}
+	local elapsedTime = 0
+
+	local connection: RBXScriptConnection
+	local humanoid = character:FindFirstChild("Humanoid")
+	local diedConn: RBXScriptConnection? = nil
+
+	local function stop()
+		connection:Disconnect()
+		if diedConn then
+			diedConn:Disconnect()
 		end
+	end
+
+	connection = RunService.Heartbeat:Connect(function(dt)
+		elapsedTime += dt
+
+		-- Stop once this weapon's active window ends, or the attacker got interrupted
+		-- (stunned, parried, guard-broken) out of the active state mid-swing
+		if elapsedTime >= weaponDef.ActiveTime or CombatStateService.getState(attacker) ~= CombatStateDefs.M1_Active then
+			stop()
+			return
+		end
+
+		local hitboxCFrame = hrp.CFrame * weaponDef.HitboxOffset
+		local partsInHitbox = workspace:GetPartBoundsInBox(hitboxCFrame, weaponDef.HitboxSize, overlapParams)
+
+		for _, part in ipairs(partsInHitbox) do
+			local targetCharacter = part.Parent
+			local targetHumanoid = targetCharacter and targetCharacter:FindFirstChild("Humanoid")
+
+			if
+				targetCharacter
+				and targetCharacter ~= character
+				and targetHumanoid
+				and targetHumanoid.Health > 0
+				and not hitTargets[targetCharacter]
+			then
+				hitTargets[targetCharacter] = true
+				resolveHit(attacker, character, targetCharacter, weaponDef, weaponName)
+			end
+		end
+	end)
+
+	if humanoid then
+		diedConn = humanoid.Died:Once(stop)
 	end
 end
 
 function HitRegistrationService.start()
-	local combatIntent = RemoteRegistry.getEvent("CombatIntent")
 	combatVisualsEvent = RemoteRegistry.getEvent("CombatVisuals")
-	combatIntent.OnServerEvent:Connect(handleHitRequest)
+
+	-- The sweep is driven by the server's own validated FSM transitions, not by
+	-- anything the client reports after the fact
+	CombatStateService.StateValidated:Connect(function(player, _oldState, newState)
+		if newState ~= CombatStateDefs.M1_Active then return end
+		performServerHitboxSweep(player, CombatStateService.getWeapon(player))
+	end)
+
 	print("HitRegistrationService initialized.")
 end
 

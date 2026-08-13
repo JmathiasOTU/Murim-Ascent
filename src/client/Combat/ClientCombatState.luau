@@ -18,9 +18,11 @@ local ClientCombatState = {}
 ClientCombatState.FSMReady = LemonSignal.new()
 ClientCombatState.CurrentFSM = nil
 
--- The Sweeping Hitbox: checks every frame during the M1_Active window so a fast
--- camera turn mid-swing still lands, instead of one single-frame check
-local function performSweepingHitbox(character: Model, combatIntent: RemoteEvent, fsm, weaponName: string)
+-- The Sweeping Hitbox: cosmetic only. The server runs the authoritative version of this
+-- same sweep off its own validated M1_Active transition (HitRegistrationService.luau) and
+-- decides who got hit on its own — this client copy exists purely to show the graybox
+-- visualizer to the swinging player, not to report hits.
+local function performSweepingHitbox(character: Model, fsm, weaponName: string)
 	local hrp = character:FindFirstChild("HumanoidRootPart")
 	if not hrp then return end
 
@@ -65,13 +67,10 @@ local function performSweepingHitbox(character: Model, combatIntent: RemoteEvent
 			local targetCharacter = part.Parent
 			local targetHumanoid = targetCharacter and targetCharacter:FindFirstChild("Humanoid")
 
-			-- If we found a Humanoid, and we haven't already hit this character in this swing
+			-- Purely visual feedback for the swinging player; the server decides the real outcome
 			if targetHumanoid and targetHumanoid.Health > 0 and not hitTargets[targetCharacter] then
 				hitTargets[targetCharacter] = true
-				print(`[CLIENT HITBOX] Swept and hit: {targetCharacter.Name} with {weaponName}`)
-
-				-- Tell the Server we hit someone!
-				combatIntent:FireServer("Hit", { target = targetCharacter, weaponName = weaponName })
+				print(`[CLIENT HITBOX] Swept: {targetCharacter.Name} with {weaponName}`)
 			end
 		end
 	end)
@@ -101,6 +100,9 @@ function ClientCombatState.start()
 		local isComboOnCooldown = false
 		local bufferedInput = false
 
+		-- TODO: pull this from the Inventory/Equip system once it exists
+		local equippedWeapon = "DemonicGreatsword"
+
 		local function cancelTask(taskName: string)
 			if activeTasks[taskName] then
 				task.cancel(activeTasks[taskName])
@@ -120,7 +122,9 @@ function ClientCombatState.start()
 		-- and tell the server so it can validate against its own ledger
 		fsm.StateChanged:Connect(function(oldState, newState)
 			print(`[COMBAT FSM] {oldState} -> {newState}`)
-			CombatIntent:FireServer("UpdateState", { targetState = newState })
+			-- weaponName only matters to the server on the M1_Windup transition (that's
+			-- where it locks the swing's weapon in), but it's harmless to include always
+			CombatIntent:FireServer("UpdateState", { targetState = newState, weaponName = equippedWeapon })
 		end)
 
 		-- Runs an M1 swing. Callable directly (fresh click from Idle/Parrying) or from the
@@ -130,8 +134,6 @@ function ClientCombatState.start()
 
 			if isComboOnCooldown then return end
 
-			-- TODO: pull this from the Inventory/Equip system once it exists
-			local equippedWeapon = "DemonicGreatsword"
 			local weaponDef = WeaponDefinitions[equippedWeapon] or WeaponDefinitions.Default
 
 			-- Reset window has to be weapon-specific: a slow greatsword's own windup+active+endlag
@@ -149,7 +151,7 @@ function ClientCombatState.start()
 					if fsm:transition(CombatStateDefs.M1_Active) then
 
 						-- FIRES THE HITBOX EXACTLY AS THE STATE BECOMES ACTIVE
-						performSweepingHitbox(character, CombatIntent, fsm, equippedWeapon)
+						performSweepingHitbox(character, fsm, equippedWeapon)
 
 						scheduleTask("CombatFlow", weaponDef.ActiveTime, function()
 							if fsm:transition(CombatStateDefs.M1_Endlag) then

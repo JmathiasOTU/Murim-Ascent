@@ -4,7 +4,6 @@
 export type WeaponData = {
 	HitboxSize: Vector3,
 	HitboxOffset: CFrame,
-	MaxServerRange: number,
 
 	-- Combat Stats
 	BaseDamage: number,
@@ -22,7 +21,6 @@ local WeaponDefinitions: { [string]: WeaponData } = {
 	Default = {
 		HitboxSize = Vector3.new(4, 5, 4.5),
 		HitboxOffset = CFrame.new(0, 0, -3),
-		MaxServerRange = 7,
 		BaseDamage = 5,
 		WindupTime = 0.3,
 		ActiveTime = 0.1,
@@ -34,7 +32,6 @@ local WeaponDefinitions: { [string]: WeaponData } = {
 	DemonicGreatsword = {
 		HitboxSize = Vector3.new(6, 6, 7),
 		HitboxOffset = CFrame.new(0, 0, -4.5),
-		MaxServerRange = 11,
 		BaseDamage = 15,
 		WindupTime = 0.6, -- Slow swing!
 		ActiveTime = 0.2, -- Lingering active frames!
@@ -46,7 +43,6 @@ local WeaponDefinitions: { [string]: WeaponData } = {
 	PlumBlossomDagger = {
 		HitboxSize = Vector3.new(4, 5, 5),
 		HitboxOffset = CFrame.new(0, 0, -3.5),
-		MaxServerRange = 8,
 		BaseDamage = 3,
 		WindupTime = 0.15, -- Extremely fast!
 		ActiveTime = 0.1,
