@@ -77,9 +77,13 @@ function CombatStateService.start()
 		playerStates[player] = CombatStateDefs.Idle
 
 		player.CharacterAdded:Connect(function()
-			-- Reset the ledger on every spawn so a mid-combo death can't strand it
+			-- Reset the ledger on every spawn so a mid-combo death can't strand it. Critical
+			-- cooldowns reset too, matching the client's own lastCriticalTime reset on respawn
+			-- (ClientCombatState.luau) — otherwise a fresh life inherits a stale server-side
+			-- cooldown the client doesn't know about, silently eating its next Critical press.
 			playerStates[player] = CombatStateDefs.Idle
 			playerWeapons[player] = nil
+			criticalCooldowns[player] = nil
 		end)
 	end)
 
