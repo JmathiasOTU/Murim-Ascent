@@ -13,8 +13,12 @@ local ParryValidationService = {}
 local BASE_PARRY_POSTURE_DAMAGE = 15
 local BASE_BLOCK_POSTURE_DAMAGE = 10
 
--- Evaluates the defensive state of the target
-function ParryValidationService.evaluateDefense(attacker: Player, targetCharacter: Model, rawDamage: number): string
+-- Evaluates the defensive state of the target. `attacker` is normally a real Player, but
+-- may also be a duck-typed { Name: string, Character: Model } stand-in for an NPC attacker
+-- (e.g. TrainingDummyService) — everything below works for either, except the punish-stun
+-- on a perfect parry, which is explicitly skipped for non-Player attackers since there's no
+-- real Player to push a forced FSM state onto.
+function ParryValidationService.evaluateDefense(attacker, targetCharacter: Model, rawDamage: number): string
 	local targetPlayer = Players:GetPlayerFromCharacter(targetCharacter)
 	local targetState = CombatStateDefs.Idle
 
@@ -30,13 +34,23 @@ function ParryValidationService.evaluateDefense(attacker: Player, targetCharacte
 	if targetState == CombatStateDefs.Parrying then
 		print(`[PARRY] {targetCharacter.Name} PERFECT PARRY on {attacker.Name}!`)
 
-		-- Punish the ATTACKER'S posture for getting parried
+		-- Punish the ATTACKER'S posture for getting parried. If this posture hit alone
+		-- crosses the guard-break threshold, addPostureDamage forces GuardBroken on the
+		-- attacker synchronously, before this call returns.
 		if attacker.Character then
 			PostureService.addPostureDamage(attacker.Character, BASE_PARRY_POSTURE_DAMAGE)
 		end
 
-		-- Punish the ATTACKER with a stun on top of the posture hit
-		CombatStateService.forceTimedState(attacker, CombatStateDefs.Stunned, CombatConstants.ParryPunishStunDuration)
+		-- Punish the ATTACKER with a stun on top of the posture hit — but only for a real
+		-- Player attacker (a dummy has no FSM to force a state onto), and only if the posture
+		-- hit above didn't already GuardBreak them. GuardBroken is the bigger punishment;
+		-- forcing Stunned on top of it would immediately stomp it (forceState just overwrites
+		-- playerStates unconditionally), cutting GuardBreakDuration down to ParryPunishStunDuration
+		-- instead of stacking with it.
+		local isRealPlayer = typeof(attacker) == "Instance" and attacker:IsA("Player")
+		if isRealPlayer and not (attacker.Character and CombatStateService.getState(attacker) == CombatStateDefs.GuardBroken) then
+			CombatStateService.forceTimedState(attacker, CombatStateDefs.Stunned, CombatConstants.ParryPunishStunDuration)
+		end
 
 		return "Parried"
 

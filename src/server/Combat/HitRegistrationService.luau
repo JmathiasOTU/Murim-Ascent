@@ -21,7 +21,10 @@ local combatVisualsEvent: RemoteEvent? = nil
 -- own sweep (ClientCombatState.luau) is cosmetic only and never reported here.
 -- `hitboxData` is either a WeaponDefinitions entry (M1) or a WeaponCriticalRegistry
 -- entry (Critical) — both carry BaseDamage; Critical also carries a heavier StunDuration.
-local function resolveHit(attacker: Player, attackerCharacter: Model, targetCharacter: Model, hitboxData, weaponName: string)
+-- `comboStep` is the attacker's M1 combo step (1-5) if this was an M1 hit, so the victim's
+-- client can play the matching Hit reaction (Hit5 = the Flourish launch/backflip) — nil
+-- for Critical hits, which have no combo step of their own to report.
+local function resolveHit(attacker: Player, attackerCharacter: Model, targetCharacter: Model, hitboxData, weaponName: string, comboStep: number?)
 	local hrp = attackerCharacter:FindFirstChild("HumanoidRootPart")
 	local targetHRP = targetCharacter:FindFirstChild("HumanoidRootPart")
 	local targetHumanoid = targetCharacter:FindFirstChild("Humanoid")
@@ -45,7 +48,7 @@ local function resolveHit(attacker: Player, attackerCharacter: Model, targetChar
 	local stunDuration = hitboxData.StunDuration or CombatConstants.HitstunDuration
 
 	if targetPlayer then
-		CombatStateService.forceTimedState(targetPlayer, CombatStateDefs.Stunned, stunDuration)
+		CombatStateService.forceTimedState(targetPlayer, CombatStateDefs.Stunned, stunDuration, nil, comboStep)
 	else
 		-- DUMMY FALLBACK
 		targetCharacter:SetAttribute("CombatState", CombatStateDefs.Stunned)
@@ -63,8 +66,9 @@ end
 -- claim who it hit — it can only claim it started swinging. Shared by both M1 (fired off
 -- M1_Active with WeaponDefinitions) and Critical (fired off Critical_Active with
 -- WeaponCriticalRegistry) — `activeStateName` is which of those this sweep belongs to, so
--- it aborts correctly if the attacker gets interrupted out of it.
-local function performServerHitboxSweep(attacker: Player, hitboxData, activeStateName: string, weaponName: string)
+-- it aborts correctly if the attacker gets interrupted out of it. `comboStep` is passed
+-- straight through to resolveHit — see its doc comment above.
+local function performServerHitboxSweep(attacker: Player, hitboxData, activeStateName: string, weaponName: string, comboStep: number?)
 	local character = attacker.Character
 	local hrp = character and character:FindFirstChild("HumanoidRootPart")
 	if not character or not hrp then return end
@@ -112,7 +116,7 @@ local function performServerHitboxSweep(attacker: Player, hitboxData, activeStat
 				and not hitTargets[targetCharacter]
 			then
 				hitTargets[targetCharacter] = true
-				resolveHit(attacker, character, targetCharacter, hitboxData, weaponName)
+				resolveHit(attacker, character, targetCharacter, hitboxData, weaponName, comboStep)
 			end
 		end
 	end)
@@ -132,10 +136,10 @@ function HitRegistrationService.start()
 
 		if newState == CombatStateDefs.M1_Active then
 			local weaponDef = WeaponDefinitions[weaponName] or WeaponDefinitions.Default
-			performServerHitboxSweep(player, weaponDef, CombatStateDefs.M1_Active, weaponName)
+			performServerHitboxSweep(player, weaponDef, CombatStateDefs.M1_Active, weaponName, CombatStateService.getComboStep(player))
 		elseif newState == CombatStateDefs.Critical_Active then
 			local criticalDef = WeaponCriticalRegistry[weaponName] or WeaponCriticalRegistry.Default
-			performServerHitboxSweep(player, criticalDef, CombatStateDefs.Critical_Active, weaponName)
+			performServerHitboxSweep(player, criticalDef, CombatStateDefs.Critical_Active, weaponName, nil)
 		end
 	end)
 

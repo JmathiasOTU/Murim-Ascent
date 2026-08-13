@@ -26,11 +26,27 @@ local playerWeapons = {}
 -- Enforced here, not just client-side, per the Bouncer rule against trusting client cooldowns.
 local criticalCooldowns = {}
 
+-- Which M1 combo step (1-5) a swing was declared with, locked in at M1_Windup. Purely
+-- cosmetic right now (which Hit reaction the victim plays) — trusting the client's claim
+-- here is fine for that, but this needs real server-side tracking before it's ever allowed
+-- to affect damage/knockback (e.g. a real Flourish bonus), same as criticalCooldowns above.
+local playerComboStep = {}
+
 -- Resolves and validates the weapon a windup was declared with against `registry`,
 -- falling back to "Default" for anything missing or unrecognized
 local function resolveWeaponName(data, registry): string
 	local weaponName = data and data.weaponName
 	return (weaponName and registry[weaponName]) and weaponName or "Default"
+end
+
+-- Sanitizes the client-claimed combo step into an integer 1-5, defaulting to 1 for
+-- anything missing or malformed
+local function resolveComboStep(data): number
+	local step = data and data.comboStep
+	if type(step) ~= "number" then
+		return 1
+	end
+	return math.clamp(math.floor(step), 1, 5)
 end
 
 -- Cached in .start() once RemoteRegistry has been initialized
@@ -44,23 +60,30 @@ function CombatStateService.getWeapon(player: Player): string
 	return playerWeapons[player] or "Default"
 end
 
--- Allows the server to forcefully override a player's state (Stuns, Guard Breaks)
-function CombatStateService.forceState(player: Player, forcedState: string)
+function CombatStateService.getComboStep(player: Player): number
+	return playerComboStep[player] or 1
+end
+
+-- Allows the server to forcefully override a player's state (Stuns, Guard Breaks).
+-- `extraData`, if given, rides along on the ForceState event untouched — e.g. the attacker's
+-- combo step, so the victim's client knows which Hit reaction to play.
+function CombatStateService.forceState(player: Player, forcedState: string, extraData: any?)
 	playerStates[player] = forcedState
 	print(`[SERVER OVERRIDE] {player.Name} forced into {forcedState}!`)
 
 	-- Tell the client they were forcefully changed so their local FSM updates!
 	if combatIntentEvent then
-		combatIntentEvent:FireClient(player, "ForceState", forcedState)
+		combatIntentEvent:FireClient(player, "ForceState", forcedState, extraData)
 	end
 end
 
 -- Forces a player into a vulnerable state (Stunned, GuardBroken) and reverts them
 -- to `revertState` once `duration` elapses, but only if nothing else already moved
--- them on (e.g. a second hit landing mid-stun, or death).
-function CombatStateService.forceTimedState(player: Player, state: string, duration: number, revertState: string?)
+-- them on (e.g. a second hit landing mid-stun, or death). `extraData` only rides along
+-- on the initial forced push, not the revert.
+function CombatStateService.forceTimedState(player: Player, state: string, duration: number, revertState: string?, extraData: any?)
 	revertState = revertState or CombatStateDefs.Idle
-	CombatStateService.forceState(player, state)
+	CombatStateService.forceState(player, state, extraData)
 
 	task.delay(duration, function()
 		if CombatStateService.getState(player) == state then
@@ -84,6 +107,7 @@ function CombatStateService.start()
 			playerStates[player] = CombatStateDefs.Idle
 			playerWeapons[player] = nil
 			criticalCooldowns[player] = nil
+			playerComboStep[player] = nil
 		end)
 	end)
 
@@ -91,6 +115,7 @@ function CombatStateService.start()
 		playerStates[player] = nil
 		playerWeapons[player] = nil
 		criticalCooldowns[player] = nil
+		playerComboStep[player] = nil
 	end)
 
 	-- The Bouncer: Listens to Client Intents
@@ -131,6 +156,7 @@ function CombatStateService.start()
 		-- later off *_Active can't be tricked into using a weapon swapped in after the fact
 		if requestedState == CombatStateDefs.M1_Windup then
 			playerWeapons[player] = resolveWeaponName(data, WeaponDefinitions)
+			playerComboStep[player] = resolveComboStep(data)
 		elseif requestedState == CombatStateDefs.Critical_Windup then
 			playerWeapons[player] = resolveWeaponName(data, WeaponCriticalRegistry)
 		end
