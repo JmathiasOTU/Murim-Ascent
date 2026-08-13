@@ -21,9 +21,10 @@ export type WeaponCriticalData = {
 }
 
 local WeaponCriticalRegistry: { [string]: WeaponCriticalData } = {
-	Default = require(script.Definitions.Default),
-	DemonicGreatsword = require(script.Definitions.DemonicGreatsword),
-	PlumBlossomDagger = require(script.Definitions.PlumBlossomDagger),
+	Default = require(script.Parent.Definitions.Default),
+	DemonicGreatsword = require(script.Parent.Definitions.DemonicGreatsword),
+	Katana = require(script.Parent.Definitions.Katana),
+	PlumBlossomDagger = require(script.Parent.Definitions.PlumBlossomDagger),
 }
 
 return WeaponCriticalRegistry

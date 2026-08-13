@@ -7,6 +7,7 @@ local QinggongController = require(script.Parent.Parent.Movement.QinggongControl
 local VFXPlaybackController = require(script.Parent.Parent.VFX.VFXPlaybackController)
 local FootstepController = require(script.Parent.Parent.VFX.FootstepController)
 local ClientCombatState = require(script.Parent.Parent.Combat.ClientCombatState)
+local CombatAnimationController = require(script.Parent.Parent.Combat.AnimationController)
 local PostureBarUI = require(script.Parent.Parent.UI.HUD.PostureBarUI)
 local ClientBootstrap = {}
 
@@ -23,6 +24,7 @@ function ClientBootstrap.start()
 	MovementPhysicsController.start()
 	QinggongController.start()
 	VFXPlaybackController.start()
+	CombatAnimationController.start() -- must subscribe before ClientCombatState.start() below fires FSMReady
 	ClientCombatState.start()
 	PostureBarUI.start()
 	return nil

@@ -17,6 +17,9 @@ local WeaponCriticalRegistry = require(ReplicatedStorage.Shared.Combat.WeaponCri
 
 local ClientCombatState = {}
 ClientCombatState.FSMReady = LemonSignal.new()
+-- Fires (comboCount) right before an M1 windup transition, so AnimationController knows
+-- which combo-step clip to play the instant it reacts to the M1_Windup StateChanged
+ClientCombatState.SwingStep = LemonSignal.new()
 ClientCombatState.CurrentFSM = nil
 
 -- The Sweeping Hitbox: cosmetic only. The server runs the authoritative version of this
@@ -95,14 +98,15 @@ function ClientCombatState.start()
 		-- GC Defense: Track active threads so rapid clicking doesn't leak memory or overlap states
 		local activeTasks = {}
 
-		-- Combo Tracker: 4-hit chain that drops if you stop clicking, and locks out after the finisher
+		-- Combo Tracker: 5-hit chain (4 standard swings + a Flourish finisher) that drops if
+		-- you stop clicking, and locks out after the finisher
 		local comboCount = 1
 		local lastSwingTime = 0
 		local isComboOnCooldown = false
 		local bufferedInput = false
 
 		-- TODO: pull this from the Inventory/Equip system once it exists
-		local equippedWeapon = "DemonicGreatsword"
+		local equippedWeapon = "Katana"
 
 		-- Client-side mirror of the server's cooldown gate, purely so we don't spam a
 		-- doomed request at the server every frame C is held; the server enforces the real one
@@ -127,10 +131,11 @@ function ClientCombatState.start()
 		-- and tell the server so it can validate against its own ledger
 		fsm.StateChanged:Connect(function(oldState, newState)
 			print(`[COMBAT FSM] {oldState} -> {newState}`)
-			-- weaponName only matters to the server on the M1_Windup/Critical_Windup
-			-- transitions (that's where it locks the swing's weapon in and, for Critical,
-			-- checks the cooldown), but it's harmless to include always
-			CombatIntent:FireServer("UpdateState", { targetState = newState, weaponName = equippedWeapon })
+			-- weaponName/comboStep only matter to the server on specific transitions
+			-- (M1_Windup/Critical_Windup lock the weapon in, and M1_Windup also locks comboStep
+			-- so it can tell a hit victim which Hit reaction to play), but it's harmless to
+			-- include both always
+			CombatIntent:FireServer("UpdateState", { targetState = newState, weaponName = equippedWeapon, comboStep = comboCount })
 		end)
 
 		-- Runs an M1 swing. Callable directly (fresh click from Idle/Parrying) or from the
@@ -148,9 +153,13 @@ function ClientCombatState.start()
 				comboCount = 1
 			end
 
+			-- Must fire before the transition below so AnimationController already knows
+			-- the step by the time it reacts to the M1_Windup StateChanged
+			ClientCombatState.SwingStep:Fire(comboCount)
+
 			if fsm:transition(CombatStateDefs.M1_Windup) then
 				lastSwingTime = os.clock()
-				print(`[COMBAT FSM] Swing {comboCount}/4 with {equippedWeapon}`)
+				print(`[COMBAT FSM] Swing {comboCount}/5 with {equippedWeapon}`)
 
 				-- Progress the swing automatically using our GC-safe tasks, timed by the equipped weapon
 				scheduleTask("CombatFlow", weaponDef.WindupTime, function()
@@ -177,8 +186,8 @@ function ClientCombatState.start()
 					end
 				end)
 
-				-- Combo Finisher Logic
-				if comboCount == 4 then
+				-- Combo Finisher Logic (5th swing = the Flourish)
+				if comboCount == 5 then
 					isComboOnCooldown = true
 					print(`[COMBAT FSM] Combo finished! On {CombatConstants.ComboCooldownTime}s cooldown.`)
 
@@ -256,8 +265,8 @@ function ClientCombatState.start()
 				end
 			end
 
-			-- C (Critical) - Weapon-specific finisher, only from Idle
-			if input.KeyCode == Enum.KeyCode.C then
+			-- R (Critical) - Weapon-specific finisher, only from Idle
+			if input.KeyCode == Enum.KeyCode.R then
 				if fsm.CurrentState == CombatStateDefs.Idle then
 					executeCritical()
 				end
@@ -312,15 +321,21 @@ function ClientCombatState.start()
 		end)
 
 		-- LISTEN FOR SERVER OVERRIDES (Stuns, Guard Breaks)
-		local forceStateConn = CombatIntent.OnClientEvent:Connect(function(action: string, forcedState: string)
+		local forceStateConn = CombatIntent.OnClientEvent:Connect(function(action: string, forcedState: string, extraData: any?)
 			if action ~= "ForceState" then return end
 
 			-- 1. Immediately cancel any active attacks, feints, or parry timers
 			cancelTask("CombatFlow")
 			bufferedInput = false -- Getting stunned/guard-broken clears any queued swing too
 
-			-- 2. Forcefully override the local state, bypassing the Bouncer
+			-- 2. Forcefully override the local state, bypassing the Bouncer. FSM.transition()
+			-- fires StateChanged itself, but a direct CurrentState assignment doesn't — fire it
+			-- manually so anything subscribed (AnimationController, etc.) still reacts correctly.
+			-- extraData rides along untouched (e.g. the attacker's combo step on a real Stunned-
+			-- from-being-hit, nil for a Stunned-from-getting-parried) so listeners can tell why.
+			local oldState = fsm.CurrentState
 			fsm.CurrentState = forcedState
+			fsm.StateChanged:Fire(oldState, forcedState, extraData)
 			print(`[CLIENT FSM] Server forcefully applied state: {forcedState}`)
 
 			-- 3. The Physical Stun: lock/restore legs so GuardBroken can't be walked off
@@ -344,7 +359,7 @@ function ClientCombatState.start()
 			table.clear(activeTasks)
 		end)
 
-		ClientCombatState.FSMReady:Fire(fsm, character)
+		ClientCombatState.FSMReady:Fire(fsm, character, equippedWeapon)
 	end
 
 	if player.Character then
