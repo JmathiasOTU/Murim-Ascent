@@ -39,16 +39,24 @@ function PostureService.triggerGuardBreak(character: Model, player: Player?)
 	-- 1. Apply the State Change
 	if player then
 		postureData[player] = 0
-		CombatStateService.forceState(player, CombatStateDefs.GuardBroken)
 
 		-- Tell the client to empty their bar!
 		if postureUpdateEvent then
 			postureUpdateEvent:FireClient(player, 0, MAX_POSTURE)
 		end
+
+		CombatStateService.forceTimedState(player, CombatStateDefs.GuardBroken, CombatConstants.GuardBreakDuration)
 	else
 		-- DUMMY FALLBACK for testing in Studio
 		character:SetAttribute("Posture", 0)
 		character:SetAttribute("CombatState", CombatStateDefs.GuardBroken)
+
+		task.delay(CombatConstants.GuardBreakDuration, function()
+			if character:GetAttribute("CombatState") == CombatStateDefs.GuardBroken then
+				character:SetAttribute("CombatState", CombatStateDefs.Idle)
+				print(`[RECOVERY] Dummy recovered from Guard Break.`)
+			end
+		end)
 	end
 
 	-- 2. Trigger the Glass Shatter VFX (We will hook this up next!)
@@ -56,22 +64,6 @@ function PostureService.triggerGuardBreak(character: Model, player: Player?)
 	if hrp and combatVisualsEvent then
 		combatVisualsEvent:FireAllClients("GuardBreak", hrp.Position)
 	end
-
-	-- 3. The Guard Break Stun Timer
-	task.delay(CombatConstants.GuardBreakDuration, function()
-		if player then
-			-- Only reset to Idle if they are STILL guard broken (didn't get killed during the stun)
-			if CombatStateService.getState(player) == CombatStateDefs.GuardBroken then
-				CombatStateService.forceState(player, CombatStateDefs.Idle)
-				print(`[RECOVERY] {player.Name} recovered from Guard Break.`)
-			end
-		else
-			if character:GetAttribute("CombatState") == CombatStateDefs.GuardBroken then
-				character:SetAttribute("CombatState", CombatStateDefs.Idle)
-				print(`[RECOVERY] Dummy recovered from Guard Break.`)
-			end
-		end
-	end)
 end
 
 -- Adds posture damage. If it hits MAX, it triggers the break.

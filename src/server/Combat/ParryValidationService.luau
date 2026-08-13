@@ -5,6 +5,7 @@ local Players = game:GetService("Players")
 local CombatStateService = require(script.Parent.CombatStateService)
 local PostureService = require(script.Parent.PostureService)
 local CombatStateDefs = require(ReplicatedStorage.Shared.Combat.CombatStates.CombatStateDefs)
+local CombatConstants = require(ReplicatedStorage.Shared.Combat.CombatConstants)
 
 local ParryValidationService = {}
 
@@ -33,6 +34,10 @@ function ParryValidationService.evaluateDefense(attacker: Player, targetCharacte
 		if attacker.Character then
 			PostureService.addPostureDamage(attacker.Character, BASE_PARRY_POSTURE_DAMAGE)
 		end
+
+		-- Punish the ATTACKER with a stun on top of the posture hit
+		CombatStateService.forceTimedState(attacker, CombatStateDefs.Stunned, CombatConstants.ParryPunishStunDuration)
+
 		return "Parried"
 
 	-- 2. STANDARD BLOCK

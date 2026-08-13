@@ -67,12 +67,7 @@ local function handleHitRequest(player: Player, action: string, data: { target: 
 		local stunDuration = CombatConstants.HitstunDuration
 
 		if targetPlayer then
-			CombatStateService.forceState(targetPlayer, CombatStateDefs.Stunned)
-			task.delay(stunDuration, function()
-				if CombatStateService.getState(targetPlayer) == CombatStateDefs.Stunned then
-					CombatStateService.forceState(targetPlayer, CombatStateDefs.Idle)
-				end
-			end)
+			CombatStateService.forceTimedState(targetPlayer, CombatStateDefs.Stunned, stunDuration)
 		else
 			-- DUMMY FALLBACK
 			targetCharacter:SetAttribute("CombatState", CombatStateDefs.Stunned)

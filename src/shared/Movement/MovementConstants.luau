@@ -22,6 +22,7 @@ local MovementConstants = {
 	-- Qinggong mechanics
 	DashPower = 150,
 	DashDuration = 0.63,
+	DashBrakeForce = 0.85, -- fraction of residual horizontal velocity shed the instant Dashing ends
 	FlashstepSpeed = 65,
 	FlashstepDuration = 0.5,
 	CombatFlashstepDuration = 0.25,

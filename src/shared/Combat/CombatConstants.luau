@@ -9,6 +9,7 @@ local CombatConstants = {
 	-- Stun
 	HitstunDuration = 0.4,
 	GuardBreakDuration = 1.5,
+	ParryPunishStunDuration = 0.8, -- extra stun on the attacker when their hit gets Parried
 }
 
 return CombatConstants

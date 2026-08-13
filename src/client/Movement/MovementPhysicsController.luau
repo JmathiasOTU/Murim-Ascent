@@ -35,7 +35,7 @@ function MovementPhysicsController.start()
 
 		local fsmConnection = nil
 
-		fsmConnection = fsm.StateChanged:Connect(function(_oldState, newState)
+		fsmConnection = fsm.StateChanged:Connect(function(oldState, newState)
 			
 			-- 1. DASHING AND SLIDING PHYSICS
 			if newState == MovementStateDefs.Dashing or newState == MovementStateDefs.Sliding then
@@ -299,8 +299,20 @@ function MovementPhysicsController.start()
 
 			-- 5. EXIT CLEANUP
 			else
+				-- Dashing decays to WalkSpeed via tween, but that residual momentum still carries
+				-- into normal movement once the constraint is gone — shed most of it here so the
+				-- dash stops on a dime instead of trailing off.
+				if oldState == MovementStateDefs.Dashing then
+					local currentVelocity = hrp.AssemblyLinearVelocity
+					hrp.AssemblyLinearVelocity = Vector3.new(
+						currentVelocity.X * (1 - MovementConstants.DashBrakeForce),
+						currentVelocity.Y,
+						currentVelocity.Z * (1 - MovementConstants.DashBrakeForce)
+					)
+				end
+
 				cleanupDash()
-				humanoid.AutoRotate = true 
+				humanoid.AutoRotate = true
 			end
 		end)
 		

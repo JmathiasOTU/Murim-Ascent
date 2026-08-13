@@ -29,6 +29,20 @@ function CombatStateService.forceState(player: Player, forcedState: string)
 	end
 end
 
+-- Forces a player into a vulnerable state (Stunned, GuardBroken) and reverts them
+-- to `revertState` once `duration` elapses, but only if nothing else already moved
+-- them on (e.g. a second hit landing mid-stun, or death).
+function CombatStateService.forceTimedState(player: Player, state: string, duration: number, revertState: string?)
+	revertState = revertState or CombatStateDefs.Idle
+	CombatStateService.forceState(player, state)
+
+	task.delay(duration, function()
+		if CombatStateService.getState(player) == state then
+			CombatStateService.forceState(player, revertState)
+		end
+	end)
+end
+
 function CombatStateService.start()
 	local combatIntent = RemoteRegistry.getEvent("CombatIntent")
 	combatIntentEvent = combatIntent
