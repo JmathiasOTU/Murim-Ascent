@@ -1,15 +1,2 @@
-local CombatConstants = {
-	-- Combo Tracking (ComboResetTime now lives per-weapon in WeaponDefinitions, since it
-	-- has to scale with each weapon's total swing duration)
-	ComboCooldownTime = 1.5,
-
-	-- Defense Timings
-	ParryWindow = 0.25,
-
-	-- Stun
-	HitstunDuration = 0.4,
-	GuardBreakDuration = 1.5,
-	ParryPunishStunDuration = 0.8, -- extra stun on the attacker when their hit gets Parried
-}
-
-return CombatConstants
+-- Combat system removed; rebuilding after movement polish.
+return {}

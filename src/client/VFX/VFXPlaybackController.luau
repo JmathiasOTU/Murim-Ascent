@@ -1,9 +1,9 @@
 -- src/client/VFX/VFXPlaybackController.luau
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local TweenService = game:GetService("TweenService")
 local Debris = game:GetService("Debris")
 
 local ClientMovementState = require(script.Parent.Parent.Movement.ClientMovementState)
+local RemoteMovementState = require(script.Parent.Parent.Movement.RemoteMovementState)
 local MovementStateDefs = require(ReplicatedStorage.Shared.Movement.MovementStates.MovementStateDefs)
 local RemoteRegistry = require(ReplicatedStorage.Shared.Net.RemoteRegistry)
 
@@ -13,9 +13,8 @@ local started = false
 -- Locate our VFX folder
 local AssetsFolder = ReplicatedStorage:WaitForChild("Assets")
 local VFXFolder = AssetsFolder:WaitForChild("VFX")
-
--- State tracking for continuous VFX
-local activeSprintVFX = nil
+local CombatVFXFolder = VFXFolder:WaitForChild("Combat")
+local MovementVFXFolder = VFXFolder:WaitForChild("Movement")
 
 -- Array of dictionaries so we can tune the exact start time of each sound
 local PARRY_SOUNDS = {
@@ -27,6 +26,27 @@ local PARRY_SOUNDS = {
 local BLOCK_SOUNDS = {
 	{ id = "rbxassetid://71751774673644", offset = 0.30 }, -- TODO: tune dead-air offset
 	{ id = "rbxassetid://123112951688897", offset = 0.11 }, -- TODO: tune dead-air offset
+}
+
+local SPRINT_VFX_FORWARD_OFFSET = 4 -- studs ahead of HumanoidRootPart the wind trail is welded at
+local SPRINT_VFX_NAMES = { "SprintVFX", "SprintVFX2" } -- every prefab cloned/welded while Sprinting
+
+-- States the FSM can pass through mid-sprint (jump, wall run, land, etc.) that should NOT cut the
+-- trail. Only leaving Sprinting for a state outside this set (Walking, Idle, Crouching, an
+-- explicit Dash/Slide, ...) counts as "actually stopped sprinting".
+local SPRINT_VFX_CONTINUATION_STATES = {
+	[MovementStateDefs.Jumping] = true,
+	[MovementStateDefs.DoubleJumping] = true,
+	[MovementStateDefs.Falling] = true,
+	[MovementStateDefs.AirDashing] = true,
+	[MovementStateDefs.WallHanging] = true,
+	[MovementStateDefs.WallBoost] = true,
+	[MovementStateDefs.WallRunning] = true,
+	[MovementStateDefs.WallLeaping] = true,
+	[MovementStateDefs.LedgeVaulting] = true,
+	[MovementStateDefs.LedgeJumping] = true,
+	[MovementStateDefs.LightLanding] = true,
+	[MovementStateDefs.HeavyLanding] = true,
 }
 
 -- Picks a random sound from the given table, fast-forwards past its dead air, and plays it
@@ -43,122 +63,46 @@ local function playRandomSound(soundTable, parent: Instance)
 	sound:Play()
 end
 
--- HELPER 1: Play the Burst Particle Effect
-local function playFlashstepVFX(targetCFrame)
-	local vfxTemplate = VFXFolder:FindFirstChild("FlashstepBurst")
+local ONE_SHOT_VFX_CLEANUP_TIME = 2 -- seconds; gives particles time to fade before the clone is destroyed
+
+-- Clones a named one-shot prefab from VFX.Movement at targetCFrame and bursts its emitters once
+local function playBurstVFX(vfxName: string, targetCFrame: CFrame)
+	local vfxTemplate = MovementVFXFolder:FindFirstChild(vfxName)
 	if not vfxTemplate then
-		warn("Missing FlashstepBurst in ReplicatedStorage.Assets.VFX")
+		warn("Missing " .. vfxName .. " in ReplicatedStorage.Assets.VFX.Movement")
 		return
 	end
 
-	-- Clone the invisible part holding the particles
 	local vfxClone = vfxTemplate:Clone()
 	vfxClone.CFrame = targetCFrame
 	vfxClone.Parent = workspace
 
-	-- Tell all emitters inside the part to burst
 	for _, emitter in ipairs(vfxClone:GetDescendants()) do
 		if emitter:IsA("ParticleEmitter") then
-			-- You can change '20' to however many particles you want to emit at once
-			emitter:Emit(5)
+			emitter:Emit(emitter:GetAttribute("EmitCount") or 15)
 		end
 	end
 
-	-- Clean up the part after 2 seconds (gives particles time to fade away)
-	task.delay(2, function()
-		vfxClone:Destroy()
-	end)
+	Debris:AddItem(vfxClone, ONE_SHOT_VFX_CLEANUP_TIME)
 end
 
--- HELPER 2: Create a static, fading afterimage of the character
-local function spawnAfterImage(character)
-	local hrp = character:FindFirstChild("HumanoidRootPart")
-	if not hrp then return end
+-- Clones each named prefab from VFX.Combat under `parent` and bursts its emitters, all in the same frame
+local function spawnClashSparks(vfxNames, parent: Instance)
+	for _, vfxName in ipairs(vfxNames) do
+		local vfxPrefab = CombatVFXFolder:FindFirstChild(vfxName)
+		if vfxPrefab then
+			local vfxClone = vfxPrefab:Clone()
+			vfxClone.Parent = parent
 
-	local cloneModel = Instance.new("Model")
-	cloneModel.Name = "Flashstep_AfterImage"
-
-	-- We iterate through descendants to catch limbs and accessory parts
-	for _, part in ipairs(character:GetDescendants()) do
-		if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
-			local clonePart = part:Clone()
-			clonePart:ClearAllChildren() -- Removes scripts, welds, attachments to prevent weird physics bugs
-
-			clonePart.Anchored = true
-			clonePart.CanCollide = false
-			clonePart.CanQuery = false
-			clonePart.CanTouch = false
-			clonePart.CFrame = part.CFrame
-
-			-- Stylize the afterimage (Optional: Change to Enum.Material.Neon for a glowing trail)
-			clonePart.Material = Enum.Material.ForceField
-			clonePart.Color = Color3.new(0.7, 0.7, 0.7) -- Light gray color
-
-			clonePart.Parent = cloneModel
-
-			-- Tween it to fade out over 0.4 seconds
-			local tweenInfo = TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-			local tween = TweenService:Create(clonePart, tweenInfo, {Transparency = 1})
-			tween:Play()
-		end
-	end
-
-	-- Put it in the workspace and schedule garbage collection
-	cloneModel.Parent = workspace
-	task.delay(0.5, function()
-		cloneModel:Destroy()
-	end)
-end
-
--- HELPER 3: Safely toggle character visibility without breaking custom accessories
-local function setCharacterVisibility(character, isVisible)
-	for _, instance in ipairs(character:GetDescendants()) do
-		-- Covers limbs/accessories (BasePart) and the character's face (Decal)
-		local isHideable = (instance:IsA("BasePart") and instance.Name ~= "HumanoidRootPart") or instance:IsA("Decal")
-		if isHideable then
-			if isVisible then
-				-- Restore original transparency, default to 0 if it wasn't saved
-				instance.Transparency = instance:GetAttribute("OriginalTransparency") or 0
-			else
-				-- Save their current transparency before hiding them (in case of glass/transparent accessories)
-				instance:SetAttribute("OriginalTransparency", instance.Transparency)
-				instance.Transparency = 1
+			for _, emitter in ipairs(vfxClone:GetDescendants()) do
+				if emitter:IsA("ParticleEmitter") then
+					-- Emits a burst of particles based on what you set in Studio
+					emitter:Emit(emitter:GetAttribute("EmitCount") or 15)
+				end
 			end
+		else
+			warn("Missing " .. vfxName .. " in ReplicatedStorage.Assets.VFX.Combat")
 		end
-	end
-end
-
--- HELPER 4: Toggle continuous Sprinting VFX
-local function toggleSprintVFX(hrp, isEnabled)
-	if isEnabled then
-		if activeSprintVFX then return end -- Already playing
-
-		local vfxTemplate = VFXFolder:FindFirstChild("SprintVFX")
-		if not vfxTemplate then
-			warn("Missing SprintVFX Attachment in ReplicatedStorage.Assets.VFX")
-			return
-		end
-
-		-- Clone the attachment directly into the HumanoidRootPart
-		activeSprintVFX = vfxTemplate:Clone()
-		activeSprintVFX.Parent = hrp
-
-	elseif activeSprintVFX then
-		-- Gracefully disable emitters so the trail doesn't vanish instantly
-		for _, emitter in ipairs(activeSprintVFX:GetDescendants()) do
-			if emitter:IsA("ParticleEmitter") or emitter:IsA("Trail") then
-				emitter.Enabled = false
-			end
-		end
-
-		-- Cache the reference and clear the variable immediately so a new sprint can start
-		local vfxToDestroy = activeSprintVFX
-		activeSprintVFX = nil
-
-		-- Give particles 2 seconds to fade out before destroying the attachment
-		task.delay(2, function()
-			vfxToDestroy:Destroy()
-		end)
 	end
 end
 
@@ -174,36 +118,110 @@ local function onCombatVisual(effectType: string, position: Vector3)
 		playRandomSound(PARRY_SOUNDS, clashAnchor)
 
 		-- 3. Clone and Emit the Visual Sparks
-		local vfxPrefab = VFXFolder:FindFirstChild("ParryVFX")
-		if vfxPrefab then
-			local vfxClone = vfxPrefab:Clone()
-			vfxClone.Parent = clashAnchor
-
-			for _, emitter in ipairs(vfxClone:GetChildren()) do
-				if emitter:IsA("ParticleEmitter") then
-					-- Emits a burst of particles based on what you set in Studio
-					emitter:Emit(emitter:GetAttribute("EmitCount") or 15)
-				end
-			end
-		else
-			warn("Missing ParryVFX Attachment in ReplicatedStorage.Assets.VFX")
-		end
+		spawnClashSparks({ "ParryVFX" }, clashAnchor)
 
 		-- 4. Garbage Collection: Destroy the attachment and sound after 2 seconds
 		Debris:AddItem(clashAnchor, 2)
 
 	elseif effectType == "Block" then
-		-- Just the dull thud - no sparks for a plain block
 		local clashAnchor = Instance.new("Attachment")
 		clashAnchor.Position = position
 		clashAnchor.Parent = workspace.Terrain
 
 		playRandomSound(BLOCK_SOUNDS, clashAnchor)
 
+		-- Both block sparks fire together off the same anchor
+		spawnClashSparks({ "BlockPT1", "BlockPT2" }, clashAnchor)
+
 		Debris:AddItem(clashAnchor, 2)
 	end
 end
 
+
+-- Shared between the local player and every remote player (RemoteMovementState fires the same
+-- signal shape). activeSprintVFXParts is scoped per-character here on purpose — it used to be a
+-- single module-level variable, which meant two players sprinting at once would clobber each
+-- other's trail.
+local function setupCharacterVFX(fsm, character)
+	local humanoid = character:WaitForChild("Humanoid")
+	local hrp = character:WaitForChild("HumanoidRootPart")
+
+	local activeSprintVFXParts = {}
+
+	local function toggleSprintVFX(isEnabled)
+		if isEnabled then
+			if #activeSprintVFXParts > 0 then return end -- Already playing
+
+			for _, vfxName in ipairs(SPRINT_VFX_NAMES) do
+				local vfxTemplate = MovementVFXFolder:FindFirstChild(vfxName)
+				if vfxTemplate then
+					local vfxClone = vfxTemplate:Clone()
+					vfxClone.CFrame = hrp.CFrame * CFrame.new(0, 0, -SPRINT_VFX_FORWARD_OFFSET)
+					vfxClone.Parent = hrp
+
+					-- The template ships with its own WeldConstraint (Part0 = itself), but Part1
+					-- can't be baked in ahead of time — it has to point at *this* character's
+					-- HumanoidRootPart, which only exists once the character has spawned.
+					local weld = vfxClone:FindFirstChildOfClass("WeldConstraint")
+					if weld then
+						weld.Part0 = vfxClone
+						weld.Part1 = hrp
+					end
+
+					table.insert(activeSprintVFXParts, vfxClone)
+				else
+					warn("Missing " .. vfxName .. " in ReplicatedStorage.Assets.VFX.Movement")
+				end
+			end
+
+		elseif #activeSprintVFXParts > 0 then
+			-- Cut instantly the moment Sprinting ends — no fade-out trail
+			for _, vfxPart in ipairs(activeSprintVFXParts) do
+				vfxPart:Destroy()
+			end
+			table.clear(activeSprintVFXParts)
+		end
+	end
+
+	local fsmConnection = fsm.StateChanged:Connect(function(_oldState, newState)
+		if newState == MovementStateDefs.LedgeJumping then
+			playBurstVFX("LedgeJumpVFX", hrp.CFrame)
+		elseif newState == MovementStateDefs.WallLeaping then
+			playBurstVFX("WallLeapVfx", hrp.CFrame)
+		end
+
+		-- SPRINTING: Toggle the continuous trail on/off. Passing through a continuation state
+		-- (jump, wall run, landing, ...) mid-sprint deliberately does nothing here, so the trail
+		-- rides through those transitions instead of cutting out and re-igniting.
+		if newState == MovementStateDefs.Sprinting then
+			toggleSprintVFX(true)
+		elseif not SPRINT_VFX_CONTINUATION_STATES[newState] then
+			toggleSprintVFX(false)
+		end
+	end)
+
+	-- Died covers the normal case; AncestryChanged is the fallback for any character removal
+	-- that doesn't go through Humanoid death (resets, hub teleports, etc.)
+	local cleaned = false
+	local function cleanup()
+		if cleaned then return end
+		cleaned = true
+
+		toggleSprintVFX(false)
+
+		if fsmConnection then
+			fsmConnection:Disconnect()
+			fsmConnection = nil
+		end
+	end
+
+	humanoid.Died:Once(cleanup)
+	character.AncestryChanged:Connect(function(_, parent)
+		if not parent then
+			cleanup()
+		end
+	end)
+end
 
 function VFXPlaybackController.start()
 	if started then return end
@@ -212,50 +230,8 @@ function VFXPlaybackController.start()
 	local combatVisuals = RemoteRegistry.getEvent("CombatVisuals")
 	combatVisuals.OnClientEvent:Connect(onCombatVisual)
 
-	ClientMovementState.FSMReady:Connect(function(fsm, character)
-		local humanoid = character:WaitForChild("Humanoid")
-		local hrp = character:WaitForChild("HumanoidRootPart")
-
-		-- Clean up state variable on a new spawn
-		activeSprintVFX = nil
-
-		local fsmConnection = fsm.StateChanged:Connect(function(oldState, newState)
-
-			-- 1. ENTERING FLASHSTEP: Burst where we started, spawn the ghost, and go invisible
-			if newState == MovementStateDefs.Flashstepping then
-				playFlashstepVFX(hrp.CFrame)
-				spawnAfterImage(character)
-				setCharacterVisibility(character, false)
-			end
-
-			-- 2. EXITING FLASHSTEP: Burst where we reappeared
-			if oldState == MovementStateDefs.Flashstepping and newState ~= MovementStateDefs.Flashstepping then
-				playFlashstepVFX(hrp.CFrame)
-				setCharacterVisibility(character, true)
-			end
-
-			-- 3. SPRINTING: Toggle the continuous trail on/off
-			if newState == MovementStateDefs.Sprinting then
-				toggleSprintVFX(hrp, true)
-			end
-
-			if oldState == MovementStateDefs.Sprinting and newState ~= MovementStateDefs.Sprinting then
-				toggleSprintVFX(hrp, false)
-			end
-
-		end)
-
-		humanoid.Died:Once(function()
-			-- Safety fallback: make sure the corpse is visible if they somehow die mid-dash
-			setCharacterVisibility(character, true)
-			toggleSprintVFX(hrp, false)
-
-			if fsmConnection then
-				fsmConnection:Disconnect()
-				fsmConnection = nil
-			end
-		end)
-	end)
+	ClientMovementState.FSMReady:Connect(setupCharacterVFX)
+	RemoteMovementState.FSMReady:Connect(setupCharacterVFX)
 end
 
 return VFXPlaybackController

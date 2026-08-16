@@ -8,8 +8,8 @@ return {
 	[MovementStateDefs.Idle] = {
 		[MovementStateDefs.Walking] = true,
 		[MovementStateDefs.Running] = true,
-		[MovementStateDefs.Sprinting] = true,
-		[MovementStateDefs.Flashstepping] = true,
+		-- No direct Sprinting: it's earned by staying in Running for SprintRampDuration, never
+		-- reachable straight from a standstill by a legitimate client.
 		[MovementStateDefs.Crouching] = true,
 		[MovementStateDefs.Dashing] = true,
 		[MovementStateDefs.Jumping] = true,
@@ -18,8 +18,7 @@ return {
 	[MovementStateDefs.Walking] = {
 		[MovementStateDefs.Idle] = true,
 		[MovementStateDefs.Running] = true,
-		[MovementStateDefs.Sprinting] = true,
-		[MovementStateDefs.Flashstepping] = true,
+		-- No direct Sprinting — see Idle's note above.
 		[MovementStateDefs.Crouching] = true,
 		[MovementStateDefs.CrouchWalking] = true,
 		[MovementStateDefs.Dashing] = true,
@@ -30,7 +29,6 @@ return {
 		[MovementStateDefs.Idle] = true,
 		[MovementStateDefs.Walking] = true,
 		[MovementStateDefs.Sprinting] = true,
-		[MovementStateDefs.Flashstepping] = true,
 		[MovementStateDefs.Crouching] = true,
 		[MovementStateDefs.CrouchWalking] = true,
 		[MovementStateDefs.Dashing] = true,
@@ -42,7 +40,6 @@ return {
 		[MovementStateDefs.Idle] = true,
 		[MovementStateDefs.Walking] = true,
 		[MovementStateDefs.Running] = true,
-		[MovementStateDefs.Flashstepping] = true,
 		[MovementStateDefs.Crouching] = true,
 		[MovementStateDefs.CrouchWalking] = true,
 		[MovementStateDefs.Dashing] = true,
@@ -113,7 +110,6 @@ return {
 		[MovementStateDefs.Walking] = true,
 		[MovementStateDefs.Running] = true,
 		[MovementStateDefs.Sprinting] = true,
-		[MovementStateDefs.Flashstepping] = true,
 		[MovementStateDefs.Crouching] = false,
 		[MovementStateDefs.CrouchWalking] = false,
 		[MovementStateDefs.Dashing] = true,
@@ -127,7 +123,6 @@ return {
 		[MovementStateDefs.HeavyLanding] = true,
 	},
 
-
 	[MovementStateDefs.AirDashing] = {
 		[MovementStateDefs.Falling] = true,
 		[MovementStateDefs.DoubleJumping] = true,
@@ -139,7 +134,6 @@ return {
 		[MovementStateDefs.Running] = true,
 		[MovementStateDefs.LightLanding] = true,
 		[MovementStateDefs.HeavyLanding] = true,
-
 	},
 
 	-- ==========================================
@@ -167,16 +161,6 @@ return {
 		[MovementStateDefs.WallHanging] = true,
 		[MovementStateDefs.WallRunning] = true,
 	},
-	[MovementStateDefs.Flashstepping] = {
-		[MovementStateDefs.Idle] = true,
-		[MovementStateDefs.Walking] = true,
-		[MovementStateDefs.Running] = true,
-		[MovementStateDefs.Sprinting] = true,
-		[MovementStateDefs.Jumping] = true,
-		[MovementStateDefs.Falling] = true,
-		[MovementStateDefs.WallHanging] = true,
-		[MovementStateDefs.WallRunning] = true,
-	},
 	[MovementStateDefs.LedgeJumping] = {
 		[MovementStateDefs.Falling] = true,
 		[MovementStateDefs.AirDashing] = true,
@@ -184,7 +168,7 @@ return {
 		[MovementStateDefs.WallHanging] = true,
 	},
 
--- ==========================================
+	-- ==========================================
 	-- ADVANCED QINGGONG STATES
 	-- ==========================================
 	[MovementStateDefs.WallHanging] = {
@@ -241,8 +225,5 @@ return {
 		[MovementStateDefs.WallRunning] = true,
 		[MovementStateDefs.LightLanding] = true,
 		[MovementStateDefs.HeavyLanding] = true,
-		[MovementStateDefs.Flashstepping] = true,
-
-
 	},
 }

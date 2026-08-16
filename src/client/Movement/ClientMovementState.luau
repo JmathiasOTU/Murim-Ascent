@@ -13,24 +13,15 @@ local MovementConstants = require(ReplicatedStorage.Shared.Movement.MovementCons
 local MovementValidationUtils = require(ReplicatedStorage.Shared.Movement.MovementValidationUtils)
 local RemoteRegistry = require(ReplicatedStorage.Shared.Net.RemoteRegistry)
 local ParkourRaycastUtils = require(script.Parent.ParkourRaycastUtils)
-local ClientCombatState = require(script.Parent.Parent.Combat.ClientCombatState)
-local CombatStateDefs = require(ReplicatedStorage.Shared.Combat.CombatStates.CombatStateDefs)
 
 local ClientMovementState = {}
 ClientMovementState.FSMReady = LemonSignal.new()
 ClientMovementState.CurrentFSM = nil
 
--- The Combat FSM overrides movement during stuns/guard breaks; this keeps
--- W/Dash/etc. from fighting the WalkSpeed freeze CombatState just applied
-local function isCombatLocked(): boolean
-	local combatFSM = ClientCombatState.CurrentFSM
-	return combatFSM ~= nil
-		and (combatFSM.CurrentState == CombatStateDefs.GuardBroken or combatFSM.CurrentState == CombatStateDefs.Stunned)
-end
-
 function ClientMovementState.start()
 	local player = Players.LocalPlayer
 	local MovementIntent = RemoteRegistry.getEvent("MovementIntent")
+	local MovementStateChanged = RemoteRegistry.getEvent("MovementStateChanged")
 
 	local function onCharacterAdded(character)
 		if ClientMovementState.CurrentFSM then
@@ -41,7 +32,7 @@ function ClientMovementState.start()
 		local humanoid = character:WaitForChild("Humanoid")
 		local hrp = character:WaitForChild("HumanoidRootPart")
 
-		-- [FIX: DISABLE DEFAULT RAGDOLL/FLINGING STATES]
+		-- The FSM owns landing/fall reactions; Roblox's default ragdoll/flinging states would fight it
 		humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
 		humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
 
@@ -51,16 +42,21 @@ function ClientMovementState.start()
 		-- Intent tracking variables
 		local isCrouchToggled = false
 		local isRunningHeld = false
-		local isQinggongActive = false -- [QINGGONG] Sprint enhancer toggle
 		local wasMoving = false
 		local lastDashTime = 0
 		local fallStartTime = os.clock()
 		local hasDoubleJumped = false
 
-        -- ... Rest of your existing ClientMovementState.luau logic
+		-- Sprinting is no longer a Qinggong technique — it's earned by holding Run continuously.
+		-- Tracked off raw input (not FSM state) so a brief dash/jump/landing mid-run doesn't reset
+		-- the clock; only actually stopping, releasing Run, or crouching does.
+		local runHoldStartTime = nil
+		local function isSprintUnlocked()
+			return runHoldStartTime ~= nil and (os.clock() - runHoldStartTime) >= MovementConstants.SprintRampDuration
+		end
 
-		-- [NEW: Task 2.2] Task Management Registry
-		-- Prevents Garbage Collection spikes by securely tracking and canceling active threads
+		-- Tracks active delayed threads so a state that overrides another can cancel its
+		-- pending callback instead of leaking a timer that fires against stale state later
 		local activeTasks = {}
 		local function scheduleTask(taskName, duration, callback)
 			if activeTasks[taskName] then
@@ -72,6 +68,25 @@ function ClientMovementState.start()
 			end)
 		end
 
+		-- The server rejects a transition (illegal per its own tracked state, a cooldown, a failed
+		-- proximity check, ...) by broadcasting our own current state back to just us over this same
+		-- remote — MovementStateChanged's other subscriber (RemoteMovementState) ignores events
+		-- about the local player, so this is otherwise silent. When it disagrees with what we
+		-- predicted locally, snap back and cancel any pending follow-up (WallLeap ending, a landing
+		-- timer, ...) that was scheduled off the now-wrong prediction, so it can't fire later against
+		-- a state the server never agreed we were in.
+		local correctionConnection = MovementStateChanged.OnClientEvent:Connect(function(correctedPlayer, correctedState)
+			if correctedPlayer ~= player then return end
+			if fsm.CurrentState == correctedState then return end
+
+			for taskName, activeTask in pairs(activeTasks) do
+				task.cancel(activeTask)
+				activeTasks[taskName] = nil
+			end
+
+			fsm:forceState(correctedState)
+		end)
+
 		-- Parkour Raycast Setup
 		local parkourRayParams = RaycastParams.new()
 		parkourRayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -79,9 +94,7 @@ function ClientMovementState.start()
 		parkourRayParams.IgnoreWater = true
 
 		local function evaluateState(forceExitAction)
-			if isCombatLocked() then return end
-
-			-- ADDED: LightLanding to the protected whitelist
+			-- These states own their own exit transition; a blind idle/walk/run re-evaluation must not interrupt them
 			if not forceExitAction and (fsm.CurrentState == MovementStateDefs.Dashing or fsm.CurrentState == MovementStateDefs.Sliding or fsm.CurrentState == MovementStateDefs.LedgeVaulting or fsm.CurrentState == MovementStateDefs.WallBoost or fsm.CurrentState == MovementStateDefs.WallRunning or fsm.CurrentState == MovementStateDefs.WallLeaping or fsm.CurrentState == MovementStateDefs.HeavyLanding or fsm.CurrentState == MovementStateDefs.LightLanding) then return end
 
 			if not forceExitAction and (fsm.CurrentState == MovementStateDefs.Jumping or fsm.CurrentState == MovementStateDefs.DoubleJumping or fsm.CurrentState == MovementStateDefs.Falling) then return end
@@ -92,11 +105,7 @@ function ClientMovementState.start()
 				if isCrouchToggled then
 					targetState = MovementStateDefs.CrouchWalking
 				elseif isRunningHeld then
-					if isQinggongActive then
-						targetState = MovementStateDefs.Sprinting
-					else
-						targetState = MovementStateDefs.Running
-					end
+					targetState = isSprintUnlocked() and MovementStateDefs.Sprinting or MovementStateDefs.Running
 				else
 					targetState = MovementStateDefs.Walking
 				end
@@ -107,6 +116,11 @@ function ClientMovementState.start()
 					targetState = MovementStateDefs.Idle
 				end
 			end
+
+			-- FSM:transition() treats "already in this state" as a no-op success, which would
+			-- otherwise fire a redundant UpdateState the server correctly rejects (there's no
+			-- self-entry in the transition table for e.g. Idle -> Idle)
+			if targetState == fsm.CurrentState then return end
 
 			local success = fsm:transition(targetState)
 			if success then
@@ -130,7 +144,6 @@ function ClientMovementState.start()
 					if success then
 						MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.LedgeVaulting })
 
-						-- [NEW: Task 2.2] Managed GC
 						scheduleTask("LedgeVault", MovementConstants.LedgeVaultDuration, function()
 							if fsm.CurrentState == MovementStateDefs.LedgeVaulting then evaluateState(true) end
 						end)
@@ -138,8 +151,8 @@ function ClientMovementState.start()
 				end
 
 			elseif state == MovementStateDefs.WallRunning then
-				local rightRay = workspace:Raycast(hrp.CFrame.Position, hrp.CFrame.RightVector * 3.5, parkourRayParams)
-				local leftRay = workspace:Raycast(hrp.CFrame.Position, -hrp.CFrame.RightVector * 3.5, parkourRayParams)
+				local rightRay = workspace:Raycast(hrp.CFrame.Position, hrp.CFrame.RightVector * MovementConstants.WallSideRayDistance, parkourRayParams)
+				local leftRay = workspace:Raycast(hrp.CFrame.Position, -hrp.CFrame.RightVector * MovementConstants.WallSideRayDistance, parkourRayParams)
 				local floorRay = workspace:Raycast(hrp.CFrame.Position, Vector3.new(0, -3.2, 0), parkourRayParams)
 
 				if (not rightRay and not leftRay) or floorRay then
@@ -148,12 +161,13 @@ function ClientMovementState.start()
 			end
 		end
 
-		-- [NEW: Task 2.1] Throttle variables
 		local parkourUpdateAccumulator = 0
 		local PARKOUR_TICK_RATE = 0.033 -- Scans ~30 times a second instead of 60+ (FPS independent)
 
-		local renderConn = RunService.RenderStepped:Connect(function(dt)
-			-- [NEW: Task 2.1] Throttled Raycast Engine
+		-- Heartbeat, not RenderStepped: this loop writes physics (AssemblyLinearVelocity in the
+		-- collision bumper below) and drives fsm:transition() decisions, none of which benefit
+		-- from running faster than the physics engine actually steps
+		local renderConn = RunService.Heartbeat:Connect(function(dt)
 			parkourUpdateAccumulator += dt
 			if parkourUpdateAccumulator >= PARKOUR_TICK_RATE then
 				parkourUpdateAccumulator = 0
@@ -164,44 +178,53 @@ function ClientMovementState.start()
 				end
 			end
 
-			-- =========================================================
-			-- [THE FIX: THE RAYCAST BUMPER]
-			-- =========================================================
+			-- Predictive collision bumper: at dash/slide speeds a single physics step can clip
+			-- through geometry before the FSM reacts, so look ahead and kill velocity pre-emptively
 			if fsm.CurrentState == MovementStateDefs.Dashing or fsm.CurrentState == MovementStateDefs.Sliding or fsm.CurrentState == MovementStateDefs.AirDashing then
-
 				local currentVel = hrp.AssemblyLinearVelocity
-				-- Only calculate bumper collisions if we are moving fast
 				if currentVel.Magnitude > 15 then
-					-- Look ahead based on our speed (usually 2-4 studs ahead)
 					local lookAheadDistance = math.clamp(currentVel.Magnitude * dt * 2.5, 2, 4)
 					local rayDir = currentVel.Unit * lookAheadDistance
-
-					-- Check if we are about to clip into a wall
 					local impactHit = workspace:Raycast(hrp.Position, rayDir, parkourRayParams)
 
 					if impactHit then
-						-- 1. Kill the physics momentum BEFORE the engine panics
 						hrp.AssemblyLinearVelocity = Vector3.zero
-
-						-- 2. Force the FSM out of the dash/roll to clean up BodyMovers
 						evaluateState(true)
 					end
 				end
 
 				return -- Still return early so we don't evaluate walking/idle logic
 			end
-			-- =========================================================
 
 			if fsm.CurrentState == MovementStateDefs.LedgeVaulting or fsm.CurrentState == MovementStateDefs.WallBoost then return end
 
 			local isMoving = humanoid.MoveDirection.Magnitude > 0
+
+			-- Sprint ramp-up tracking: qualifies purely on held Run + actually moving, independent
+			-- of whatever transient FSM state we're passing through (dash, jump, landing, etc.), so
+			-- those don't reset the streak. Once qualified long enough, promote out of Running the
+			-- moment the threshold is crossed rather than waiting for the next isMoving edge.
+			local isRunQualified = isRunningHeld and isMoving and not isCrouchToggled
+			if isRunQualified then
+				if not runHoldStartTime then
+					runHoldStartTime = os.clock()
+				elseif fsm.CurrentState == MovementStateDefs.Running and isSprintUnlocked() then
+					local success = fsm:transition(MovementStateDefs.Sprinting)
+					if success then
+						MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Sprinting })
+					end
+				end
+			else
+				runHoldStartTime = nil
+			end
+
 			if isMoving ~= wasMoving then
 				wasMoving = isMoving
 				evaluateState(false)
 			end
 		end)
 
-		humanoid.StateChanged:Connect(function(oldState, newState)
+		humanoid.StateChanged:Connect(function(_oldState, newState)
 			if fsm.CurrentState == MovementStateDefs.WallLeaping or fsm.CurrentState == MovementStateDefs.WallBoost then
 				if newState == Enum.HumanoidStateType.Landed then
 					evaluateState(true)
@@ -249,7 +272,6 @@ function ClientMovementState.start()
 				if success then
 					MovementIntent:FireServer("UpdateState", { targetState = targetState })
 
-					-- [NEW: Task 2.2] Managed GC
 					scheduleTask("Landing", duration, function()
 						if fsm.CurrentState == targetState then
 							evaluateState(true)
@@ -261,10 +283,8 @@ function ClientMovementState.start()
 			end
 		end)
 
-		ContextActionService:BindActionAtPriority("ParkourSpacebar", function(actionName, inputState, inputObject)
+		ContextActionService:BindActionAtPriority("ParkourSpacebar", function(_actionName, inputState, _inputObject)
 			if inputState == Enum.UserInputState.Begin then
-				if isCombatLocked() then return Enum.ContextActionResult.Pass end
-
 				local state = fsm.CurrentState
 
 				if state == MovementStateDefs.WallRunning then
@@ -272,7 +292,6 @@ function ClientMovementState.start()
 					if success then
 						MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.WallLeaping })
 
-						-- [NEW: Task 2.2] Managed GC
 						scheduleTask("WallLeap", MovementConstants.WallLeapDuration, function()
 							if fsm.CurrentState == MovementStateDefs.WallLeaping then
 								local fallSuccess = fsm:transition(MovementStateDefs.Falling)
@@ -290,7 +309,6 @@ function ClientMovementState.start()
 					if success then
 						MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.WallBoost })
 
-						-- [NEW: Task 2.2] Managed GC
 						scheduleTask("WallBoost", MovementConstants.WallBoostDuration, function()
 							if fsm.CurrentState == MovementStateDefs.WallBoost then
 								if ParkourRaycastUtils.checkWallCling(hrp, parkourRayParams) and fsm:transition(MovementStateDefs.WallHanging) then
@@ -311,7 +329,6 @@ function ClientMovementState.start()
 							hasDoubleJumped = false
 							MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.WallRunning })
 
-							-- [NEW: Task 2.2] Managed GC
 							scheduleTask("WallRun", MovementConstants.WallRunDuration, function()
 								if fsm.CurrentState == MovementStateDefs.WallRunning then evaluateState(true) end
 							end)
@@ -334,8 +351,7 @@ function ClientMovementState.start()
 							hasDoubleJumped = true
 							MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.DoubleJumping })
 
-							-- [NEW: Task 2.2] Managed GC
-							scheduleTask("DoubleJump", 0.35, function()
+							scheduleTask("DoubleJump", MovementConstants.DoubleJumpDuration, function()
 								if fsm.CurrentState == MovementStateDefs.DoubleJumping then
 									local fallSuccess = fsm:transition(MovementStateDefs.Falling)
 									if fallSuccess then
@@ -352,15 +368,13 @@ function ClientMovementState.start()
 			return Enum.ContextActionResult.Pass
 		end, false, Enum.ContextActionPriority.High.Value, Enum.KeyCode.Space)
 
-		ContextActionService:BindAction("ToggleCrouch", function(actionName, inputState, inputObject)
+		ContextActionService:BindAction("ToggleCrouch", function(_actionName, inputState, _inputObject)
 			if inputState == Enum.UserInputState.Begin then
-				if isCombatLocked() then return Enum.ContextActionResult.Pass end
-
 				if fsm.CurrentState == MovementStateDefs.WallHanging then
 					local success = fsm:transition(MovementStateDefs.Falling)
 					if success then
 						MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Falling })
-						hrp.AssemblyLinearVelocity = hrp.CFrame.LookVector * -45
+						hrp.AssemblyLinearVelocity = hrp.CFrame.LookVector * MovementConstants.WallReleaseBackVelocity
 					end
 					return Enum.ContextActionResult.Pass
 				end
@@ -371,7 +385,6 @@ function ClientMovementState.start()
 						isCrouchToggled = true
 						MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Sliding })
 
-						-- [NEW: Task 2.2] Managed GC
 						scheduleTask("Slide", MovementConstants.SlideFrictionDuration, function()
 							if fsm.CurrentState == MovementStateDefs.Sliding then
 								evaluateState(true)
@@ -386,7 +399,7 @@ function ClientMovementState.start()
 			return Enum.ContextActionResult.Pass
 		end, false, Enum.KeyCode.C, Enum.KeyCode.LeftControl)
 
-		ContextActionService:BindAction("ToggleRun", function(actionName, inputState, inputObject)
+		ContextActionService:BindAction("ToggleRun", function(_actionName, inputState, _inputObject)
 			if inputState == Enum.UserInputState.Begin then
 				isRunningHeld = true
 				isCrouchToggled = false
@@ -397,22 +410,12 @@ function ClientMovementState.start()
 			return Enum.ContextActionResult.Pass
 		end, false, Enum.KeyCode.LeftShift)
 
-		ContextActionService:BindAction("ToggleQinggong", function(_actionName, inputState, _inputObject)
+		ContextActionService:BindAction("TriggerDash", function(_actionName, inputState, _inputObject)
 			if inputState == Enum.UserInputState.Begin then
-				isQinggongActive = not isQinggongActive
-				print("[Qinggong Ability] Sprint Toggle Active:", isQinggongActive)
-				evaluateState(false)
-			end
-			return Enum.ContextActionResult.Pass
-		end, false, Enum.KeyCode.Y)
-
-		ContextActionService:BindAction("TriggerDash", function(actionName, inputState, inputObject)
-			if inputState == Enum.UserInputState.Begin then
-				if isCombatLocked() then return Enum.ContextActionResult.Pass end
-
 				local now = os.clock()
 
-				-- ADDED: DoubleJumping and WallLeaping as valid airborne dash states
+				-- Airborne dash states (jump/fall/double-jump/wall-leap) route to AirDashing;
+				-- everything else falls through to the grounded Dashing branch below
 				if fsm.CurrentState == MovementStateDefs.Jumping or fsm.CurrentState == MovementStateDefs.Falling or fsm.CurrentState == MovementStateDefs.DoubleJumping or fsm.CurrentState == MovementStateDefs.WallLeaping then
 					if MovementValidationUtils.canDash(lastDashTime, now) then
 						local success = fsm:transition(MovementStateDefs.AirDashing)
@@ -420,7 +423,6 @@ function ClientMovementState.start()
 							lastDashTime = now
 							MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.AirDashing })
 
-							-- [NEW: Task 2.2] Managed GC
 							scheduleTask("Dash", MovementConstants.AirDashDuration, function()
 								if fsm.CurrentState == MovementStateDefs.AirDashing then
 									local fallSuccess = fsm:transition(MovementStateDefs.Falling)
@@ -433,16 +435,13 @@ function ClientMovementState.start()
 					end
 
 				elseif MovementValidationUtils.canDash(lastDashTime, now) and MovementValidationUtils.isLegalDashState(fsm.CurrentState, MovementTransitionTable) then
-					local dashState = if isQinggongActive then MovementStateDefs.Flashstepping else MovementStateDefs.Dashing
-					local dashDuration = if isQinggongActive then MovementConstants.FlashstepDuration else MovementConstants.DashDuration
-					local success = fsm:transition(dashState)
+					local success = fsm:transition(MovementStateDefs.Dashing)
 					if success then
 						lastDashTime = now
 						MovementIntent:FireServer("RequestDash")
 
-						-- [NEW: Task 2.2] Managed GC
-						scheduleTask("Dash", dashDuration, function()
-							if fsm.CurrentState == dashState then
+						scheduleTask("Dash", MovementConstants.DashDuration, function()
+							if fsm.CurrentState == MovementStateDefs.Dashing then
 								evaluateState(true)
 							end
 						end)
@@ -452,11 +451,17 @@ function ClientMovementState.start()
 			return Enum.ContextActionResult.Pass
 		end, false, Enum.KeyCode.Q)
 
-		humanoid.Died:Once(function()
+		-- Died covers the normal case; AncestryChanged is the fallback for any character removal
+		-- that doesn't go through Humanoid death (resets, hub teleports, etc.)
+		local cleaned = false
+		local function cleanup()
+			if cleaned then return end
+			cleaned = true
+
 			renderConn:Disconnect()
+			correctionConnection:Disconnect()
 			ContextActionService:UnbindAction("ToggleCrouch")
 			ContextActionService:UnbindAction("ToggleRun")
-			ContextActionService:UnbindAction("ToggleQinggong")
 			ContextActionService:UnbindAction("TriggerDash")
 			ContextActionService:UnbindAction("ParkourSpacebar")
 
@@ -465,6 +470,13 @@ function ClientMovementState.start()
 				task.cancel(t)
 			end
 			table.clear(activeTasks)
+		end
+
+		humanoid.Died:Once(cleanup)
+		character.AncestryChanged:Connect(function(_, parent)
+			if not parent then
+				cleanup()
+			end
 		end)
 
 		ClientMovementState.FSMReady:Fire(fsm, character)

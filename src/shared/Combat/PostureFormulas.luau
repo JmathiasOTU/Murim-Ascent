@@ -1,7 +1,2 @@
-local PostureFormulas = {}
-
-function PostureFormulas.calculate(basePosture)
-	return basePosture
-end
-
-return PostureFormulas
+-- Combat system removed; rebuilding after movement polish.
+return {}

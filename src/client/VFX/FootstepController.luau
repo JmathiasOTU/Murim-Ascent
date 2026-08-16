@@ -4,6 +4,7 @@ local Debris = game:GetService("Debris")
 
 local ClientMovementState = require(script.Parent.Parent.Movement.ClientMovementState)
 local MovementStateDefs = require(ReplicatedStorage.Shared.Movement.MovementStates.MovementStateDefs)
+local FootstepSoundData = require(script.Parent.FootstepSoundData)
 
 local FootstepController = {}
 
@@ -32,7 +33,7 @@ function FootstepController.start()
 			end
 		end)
 		
-		fsm.StateChanged:Connect(function(newState, oldState)
+		fsm.StateChanged:Connect(function(_oldState, newState)
 			local isMovingOnGround = (
 				newState == MovementStateDefs.Walking or 
 				newState == MovementStateDefs.Running or 
@@ -96,25 +97,21 @@ function FootstepController._processFootsteps(fsm, humanoid, hrp, character)
 end
 
 function FootstepController._playFootstepVFX(hrp, materialName)
-	local assets = ReplicatedStorage:FindFirstChild("Assets")
-	if not assets then return end
-	
-	local footstepsFolder = assets:FindFirstChild("Footsteps")
-	if not footstepsFolder then return end
+	local soundId = FootstepSoundData.GetRandomSound(materialName)
 
-	local soundTemplate = footstepsFolder:FindFirstChild(materialName) or footstepsFolder:FindFirstChild("Plastic")
-	if not soundTemplate then return end
-
-	local sfx = soundTemplate:Clone()
-	sfx.PlaybackSpeed *= 1 + (math.random(-10, 10) / 100) 
-	
-	-- [FIX 3]: Explicitly reset TimePosition to 0. Bypasses Roblox audio caching glitches!
-	sfx.TimePosition = 0 
+	local sfx = Instance.new("Sound")
+	sfx.SoundId = soundId
+	sfx.PlaybackSpeed = 1 + (math.random(-10, 10) / 100)
+	sfx.TimePosition = 0
 	sfx.Parent = hrp
 	sfx:Play()
-	
+
 	-- Simplified GC: Rely entirely on Debris rather than the fragile .Ended event
-	Debris:AddItem(sfx, 2) 
+	Debris:AddItem(sfx, 2)
+
+	local assets = ReplicatedStorage:FindFirstChild("Assets")
+	local footstepsFolder = assets and assets:FindFirstChild("Footsteps")
+	if not footstepsFolder then return end
 
 	local pieceTemplate = footstepsFolder:FindFirstChild("FootStepPiece")
 	local effectsFolder = workspace:FindFirstChild("Effects")

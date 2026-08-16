@@ -3,7 +3,6 @@ return {
 	Walking = "Walking",
 	Running = "Running",
 	Sprinting = "Sprinting",
-	Flashstepping = "Flashstepping",
 	Crouching = "Crouching",
 	CrouchWalking = "CrouchWalking",
 	Dashing = "Dashing",

@@ -37,6 +37,18 @@ function FSM.transition(self, toState)
     return true
 end
 
+-- Bypasses the transition table entirely — for snapping back to the server's authoritative
+-- state after a rejected transition, not for normal gameplay transitions.
+function FSM.forceState(self, toState)
+    if self.CurrentState == toState then
+        return
+    end
+
+    local fromState = self.CurrentState
+    self.CurrentState = toState
+    self.StateChanged:Fire(fromState, toState)
+end
+
 function FSM.destroy(self)
     self.StateChanged:Destroy()
 end

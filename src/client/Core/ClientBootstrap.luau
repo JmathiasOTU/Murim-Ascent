@@ -1,14 +1,12 @@
 -- src/client/Core/ClientBootstrap.luau
 local ClientMovementState = require(script.Parent.Parent.Movement.ClientMovementState)
+local RemoteMovementState = require(script.Parent.Parent.Movement.RemoteMovementState)
 local AnimationController = require(script.Parent.Parent.Movement.AnimationController)
 local MovementController = require(script.Parent.Parent.Movement.MovementController)
 local MovementPhysicsController = require(script.Parent.Parent.Movement.MovementPhysicsController)
-local QinggongController = require(script.Parent.Parent.Movement.QinggongController)
 local VFXPlaybackController = require(script.Parent.Parent.VFX.VFXPlaybackController)
 local FootstepController = require(script.Parent.Parent.VFX.FootstepController)
-local ClientCombatState = require(script.Parent.Parent.Combat.ClientCombatState)
-local CombatAnimationController = require(script.Parent.Parent.Combat.AnimationController)
-local PostureBarUI = require(script.Parent.Parent.UI.HUD.PostureBarUI)
+local MovementSFXController = require(script.Parent.Parent.VFX.MovementSFXController)
 local ClientBootstrap = {}
 
 function ClientBootstrap.start()
@@ -16,17 +14,15 @@ function ClientBootstrap.start()
 
 	-- 1. Initialize the Central State Manager first
 	ClientMovementState.start()
+	RemoteMovementState.start() -- mirrors other players' states so their animations/VFX play too
 
 	-- 2. Initialize the subscribers
 	FootstepController.start()
 	AnimationController.start()
 	MovementController.start() -- Your existing procedural lean script
 	MovementPhysicsController.start()
-	QinggongController.start()
 	VFXPlaybackController.start()
-	CombatAnimationController.start() -- must subscribe before ClientCombatState.start() below fires FSMReady
-	ClientCombatState.start()
-	PostureBarUI.start()
+	MovementSFXController.start()
 	return nil
 end
 

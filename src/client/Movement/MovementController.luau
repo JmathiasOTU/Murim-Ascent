@@ -9,26 +9,19 @@ local MovementController = {}
 function MovementController.start()
 	ClientMovementState.FSMReady:Connect(function(fsm, character)
 		local humanoid = character:WaitForChild("Humanoid")
-		
+
 		humanoid.WalkSpeed = MovementConstants.WalkSpeed
 		humanoid.JumpPower = MovementConstants.JumpPower
-		
-		fsm.StateChanged:Connect(function(oldState, newState)
-			
-			
-			if newState == MovementStateDefs.Jumping or 
-			   newState == MovementStateDefs.Falling or 
-			   newState == MovementStateDefs.DoubleJumping or
-			   newState == MovementStateDefs.WallLeaping then
-				return 
-			end
 
+		fsm.StateChanged:Connect(function(_oldState, newState)
+			if MovementConstants.WalkSpeedExemptStates[newState] then
+				return
+			end
 
 			local targetSpeed = MovementConstants.getSpeedForState(newState, MovementStateDefs)
 			if targetSpeed then
 				humanoid.WalkSpeed = targetSpeed
 			end
-			
 		end)
 	end)
 end

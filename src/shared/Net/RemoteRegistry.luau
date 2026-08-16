@@ -8,6 +8,7 @@ local cachedRemotes = {}
 -- Data-Driven list of every remote your game uses
 local REQUIRED_REMOTES = {
 	"MovementIntent",
+	"MovementStateChanged",
 	"CombatIntent",
 	"CombatVisuals",
 	"PostureUpdate",

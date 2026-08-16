@@ -1,48 +1,46 @@
+local MovementStateDefs = require(script.Parent.MovementStates.MovementStateDefs)
+
 local MovementConstants = {
-	WalkSpeed = 12,
+	-- Core Ground Movement
+	WalkSpeed = 8,
 	RunSpeed = 20,
 	SprintSpeed = 35,
 	CrouchSpeed = 6,
 	JumpPower = 50,
 	WalkThreshold = 0.1,
+	SprintRampDuration = 4, -- seconds of continuous Running before it auto-promotes to Sprinting
 
-	-- Airborne Constants
+	-- Dashing
+	DashPower = 150,
+	DashDuration = 0.63,
+	DashBrakeForce = 0.85, -- fraction of residual horizontal velocity shed the instant Dashing ends
+	DashCooldown = 1.5,
+
+	-- Sliding
+	SlideBoostMultiplier = 2.8,
+	SlideFrictionDuration = 1.2,
+
+	-- Airborne / Double Jump / Air Dash
 	AirDashSpeed = 150.0,
 	AirDashVerticalMult = 1.2,
 	AirDashWallSoftenRange = 3,
 	AirDashDuration = 0.35, -- how long the FSM stays in AirDashing before falling; distinct from ground DashDuration
 	DoubleJumpVelocity = 100,
+	DoubleJumpDuration = 0.35,
+	AirMomentumMultiplier = 1.3,
+	MaxAirSteeringSpeed = 45,
 
-	-- Ledge Jump Constants
-	LedgeJumpEdgeCheckForward = 3,
-	LedgeJumpEdgeCheckDown = 5,
-	LedgeJumpUpPower = 95,
-	LedgeJumpForwardPower = 120,
-
-	-- Qinggong mechanics
-	DashPower = 150,
-	DashDuration = 0.63,
-	DashBrakeForce = 0.85, -- fraction of residual horizontal velocity shed the instant Dashing ends
-	FlashstepSpeed = 65,
-	FlashstepDuration = 0.5,
-	CombatFlashstepDuration = 0.25,
-	DashCooldown = 1.5,
-	MaxPhysicsForce = 100000, -- [FIX] Finite force limit to prevent Roblox physics engine panics
-
-	-- Sliding Mechanics
-	SlideBoostMultiplier = 2.8,
-	SlideFrictionDuration = 1.2,
-
-	-- Wall shit
+	-- Wall Hanging / Boosting / Running
 	WallBoostPower = 90,
-	LedgeVaultDuration = 0.35,
 	WallBoostDuration = 0.8,
 	WallRunSpeed = 80,
 	WallRunDuration = 50,
 	WallRunGravity = 5,
+	WallRunTurnResponsiveness = 30, -- AlignOrientation; untested starting point, tune against real play
+	WallReleaseBackVelocity = -45,
 
-	-- Wall Leap Constants
-	WallLeapOutwardPower = 80,
+	-- Wall Leaping
+	WallLeapOutwardPower = 140,
 	WallLeapUpwardPower = 80,
 	WallLeapDuration = 0.2,
 	WallLeapReleaseDelay = 0.15,
@@ -50,22 +48,50 @@ local MovementConstants = {
 	WallLeapNormalOffset = 1.5,
 	WallLeapForwardOffset = 0.8,
 
-	-- Ledge Vaulting
+	-- Ledge Jumping / Vaulting
+	LedgeJumpEdgeCheckForward = 3,
+	LedgeJumpEdgeCheckDown = 5,
+	LedgeJumpUpPower = 95,
+	LedgeJumpForwardPower = 120,
 	LedgeVaultForwardForce = 25,
 	LedgeVaultUpwardForce = 30,
+	LedgeVaultDuration = 0.35,
 
-	-- Landing Mechanics
+	-- Landing
 	HeavyFallTimeThreshold = 1.2,
-	HeavyLandDuration = 0.6,
+	HeavyLandDuration = 0.4,
 	LightLandDuration = 0.3,
+	HeavyLandMinSpeed = 200,
+	HeavyLandMaxSpeed = 250,
 
-	-- Dynamic Roll Speeds
-	HeavyLandMinSpeed = 60,
-	HeavyLandMaxSpeed = 90,
+	-- Animation Lean (procedural rig tilt)
+	LeanMaxAngleDegrees = 6,
+	LeanSpeed = 10,
 
-	-- Dynamic Airborne Constants
-	AirMomentumMultiplier = 1.3,
-	MaxAirSteeringSpeed = 45,
+	-- Parkour Raycast Detection
+	WallSideRayDistance = 3.5,
+	ParkourTickRate = 0.033, -- ~30 scans/sec instead of 60+, FPS independent
+
+	-- Physics Engine Safety
+	MaxPhysicsForce = 100000, -- finite force cap so the physics engine doesn't panic on extreme velocities
+	MaxPhysicsTorque = 100000, -- same rationale as MaxPhysicsForce, for AlignOrientation's turning torque
+
+	-- Server-Side Exploit Safety Nets (intentionally generous — coarse backstops, not precision anti-cheat)
+	MaxMovementIntentsPerSecond = 30,
+	MaxPlausibleSpeed = 400, -- studs/sec; keep this comfortably above the fastest *Speed/*Power constant above, tune against real playtests
+	MinSpeedCheckInterval = 0.1, -- seconds; floor on the dt used for the speed check, so two movement
+	                             -- intents firing milliseconds apart (e.g. Jumping -> DoubleJumping) can't
+	                             -- produce a wildly unstable distance/dt reading from measurement noise
+	WallProximityCheckDistance = 12, -- studs; how far the server's wall/ledge raycasts reach when validating WallRunning/WallHanging/WallBoost/LedgeVaulting
+	WallProximityLatencyCap = 0.3, -- seconds; ceiling on how far the proximity check extrapolates a player's position forward along their velocity to compensate for replication lag
+}
+
+-- Airborne states carry their own momentum; forcing WalkSpeed here would fight the physics mid-air
+MovementConstants.WalkSpeedExemptStates = {
+	[MovementStateDefs.Jumping] = true,
+	[MovementStateDefs.Falling] = true,
+	[MovementStateDefs.DoubleJumping] = true,
+	[MovementStateDefs.WallLeaping] = true,
 }
 
 -- Helper function to map FSM states to speeds centrally
