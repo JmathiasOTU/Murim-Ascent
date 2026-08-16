@@ -31,13 +31,24 @@ local MovementConstants = {
 	MaxAirSteeringSpeed = 45,
 
 	-- Wall Hanging / Boosting / Running
-	WallBoostPower = 90,
+	WallBoostPower = 90, -- upward component of the wall-jump launch
+	WallBoostBackPower = 35, -- backward-off-the-wall component, so you actually clear it instead of re-grabbing instantly
 	WallBoostDuration = 0.8,
 	WallRunSpeed = 80,
 	WallRunDuration = 50,
 	WallRunGravity = 5,
 	WallRunTurnResponsiveness = 30, -- AlignOrientation; untested starting point, tune against real play
 	WallReleaseBackVelocity = -45,
+
+	-- Wall Clinging (climb via chained wall-jumps, no auto ledge vault)
+	WallClingDuration = 1.4, -- seconds you can hang before auto-releasing into Falling if you never jump off
+	WallClingSlideAcceleration = 8, -- studs/sec^2; how fast the downward slide picks up speed while clinging
+	WallClingMaxSlideSpeed = 25, -- studs/sec cap on the downward slide so a long hang doesn't run away
+	WallJumpMaxUses = 3, -- how many WallBoosts can be chained before touching ground resets the count
+	WallClingDoubleJumpVelocity = 85, -- small recovery hop off a WallBoost; weaker than DoubleJumpVelocity on purpose
+	WallClingDoubleJumpDuration = 0.5,
+	WallClingDoubleJumpWindow = 1, -- seconds after a WallBoost the recovery hop stays available before expiring on its own
+	WallClingDetectionRange = 4, -- studs; forward reach of the grab/still-clinging raycasts (was hardcoded at 3, felt too strict)
 
 	-- Wall Leaping
 	WallLeapOutwardPower = 140,
@@ -48,17 +59,14 @@ local MovementConstants = {
 	WallLeapNormalOffset = 1.5,
 	WallLeapForwardOffset = 0.8,
 
-	-- Ledge Jumping / Vaulting
+	-- Ledge Jumping
 	LedgeJumpEdgeCheckForward = 3,
 	LedgeJumpEdgeCheckDown = 5,
 	LedgeJumpUpPower = 95,
 	LedgeJumpForwardPower = 120,
-	LedgeVaultForwardForce = 25,
-	LedgeVaultUpwardForce = 30,
-	LedgeVaultDuration = 0.35,
 
 	-- Landing
-	HeavyFallTimeThreshold = 1.2,
+	HeavyFallTimeThreshold = 1.5,
 	HeavyLandDuration = 0.4,
 	LightLandDuration = 0.3,
 	HeavyLandMinSpeed = 200,
@@ -82,7 +90,7 @@ local MovementConstants = {
 	MinSpeedCheckInterval = 0.1, -- seconds; floor on the dt used for the speed check, so two movement
 	                             -- intents firing milliseconds apart (e.g. Jumping -> DoubleJumping) can't
 	                             -- produce a wildly unstable distance/dt reading from measurement noise
-	WallProximityCheckDistance = 12, -- studs; how far the server's wall/ledge raycasts reach when validating WallRunning/WallHanging/WallBoost/LedgeVaulting
+	WallProximityCheckDistance = 12, -- studs; how far the server's wall/ledge raycasts reach when validating WallRunning/WallHanging/WallBoost
 	WallProximityLatencyCap = 0.3, -- seconds; ceiling on how far the proximity check extrapolates a player's position forward along their velocity to compensate for replication lag
 }
 
@@ -91,6 +99,7 @@ MovementConstants.WalkSpeedExemptStates = {
 	[MovementStateDefs.Jumping] = true,
 	[MovementStateDefs.Falling] = true,
 	[MovementStateDefs.DoubleJumping] = true,
+	[MovementStateDefs.WallClingDoubleJump] = true,
 	[MovementStateDefs.WallLeaping] = true,
 }
 

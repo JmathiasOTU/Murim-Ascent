@@ -9,6 +9,7 @@ return {
 	Sliding = "Sliding",
 	Jumping = "Jumping",
 	DoubleJumping = "DoubleJumping",
+	WallClingDoubleJump = "WallClingDoubleJump", -- small recovery hop off a WallBoost, strictly for reconnecting to a wall
 	Falling = "Falling",
 	AirDashing = "AirDashing",
 
@@ -16,7 +17,6 @@ return {
 	WallHanging = "WallHanging",
 	WallBoost = "WallBoost",
 	WallRunning = "WallRunning",
-	LedgeVaulting = "LedgeVaulting",
 	WallLeaping = "WallLeaping",
 	LedgeJumping = "LedgeJumping",
 	LightLanding = "LightLanding",

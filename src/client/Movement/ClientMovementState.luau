@@ -46,6 +46,14 @@ function ClientMovementState.start()
 		local lastDashTime = 0
 		local fallStartTime = os.clock()
 		local hasDoubleJumped = false
+		local wallJumpUsesRemaining = MovementConstants.WallJumpMaxUses
+		local wallHangStartTime = 0
+		-- A short deadline instead of a plain boolean: unlocked each time WallBoost fires, but
+		-- expires on its own after WallClingDoubleJumpWindow instead of staying latched until some
+		-- other branch remembers to clear it. A persistent flag leaked through untouched paths
+		-- (WallRunning, AirDashing, ...) and silently hijacked a later, unrelated double-jump press
+		-- into the weak recovery hop — this can't leak past its window.
+		local wallClingDoubleJumpDeadline = 0
 
 		-- Sprinting is no longer a Qinggong technique — it's earned by holding Run continuously.
 		-- Tracked off raw input (not FSM state) so a brief dash/jump/landing mid-run doesn't reset
@@ -95,7 +103,7 @@ function ClientMovementState.start()
 
 		local function evaluateState(forceExitAction)
 			-- These states own their own exit transition; a blind idle/walk/run re-evaluation must not interrupt them
-			if not forceExitAction and (fsm.CurrentState == MovementStateDefs.Dashing or fsm.CurrentState == MovementStateDefs.Sliding or fsm.CurrentState == MovementStateDefs.LedgeVaulting or fsm.CurrentState == MovementStateDefs.WallBoost or fsm.CurrentState == MovementStateDefs.WallRunning or fsm.CurrentState == MovementStateDefs.WallLeaping or fsm.CurrentState == MovementStateDefs.HeavyLanding or fsm.CurrentState == MovementStateDefs.LightLanding) then return end
+			if not forceExitAction and (fsm.CurrentState == MovementStateDefs.Dashing or fsm.CurrentState == MovementStateDefs.Sliding or fsm.CurrentState == MovementStateDefs.WallBoost or fsm.CurrentState == MovementStateDefs.WallRunning or fsm.CurrentState == MovementStateDefs.WallLeaping or fsm.CurrentState == MovementStateDefs.HeavyLanding or fsm.CurrentState == MovementStateDefs.LightLanding) then return end
 
 			if not forceExitAction and (fsm.CurrentState == MovementStateDefs.Jumping or fsm.CurrentState == MovementStateDefs.DoubleJumping or fsm.CurrentState == MovementStateDefs.Falling) then return end
 			local isMoving = humanoid.MoveDirection.Magnitude > 0
@@ -131,22 +139,18 @@ function ClientMovementState.start()
 		local function processParkour()
 			local state = fsm.CurrentState
 
-			if state == MovementStateDefs.WallHanging or state == MovementStateDefs.WallBoost then
-				local headRayOrigin = hrp.CFrame.Position + Vector3.new(0, 1.5, 0)
-				local lowerRayOrigin = hrp.CFrame.Position - Vector3.new(0, 1, 0)
-				local rayDirection = hrp.CFrame.LookVector * 3
+			if state == MovementStateDefs.WallHanging then
+				-- Still gripping? Losing the wall (ran out of surface, rounded a corner),
+				-- touching ground, or overstaying WallClingDuration all end the cling the same
+				-- way a real hold would — by dropping you into a normal fall.
+				local stillClinging = ParkourRaycastUtils.checkStillClinging(hrp, parkourRayParams)
+				local hangDuration = os.clock() - wallHangStartTime
 
-				local headHit = workspace:Raycast(headRayOrigin, rayDirection, parkourRayParams)
-				local lowerHit = workspace:Raycast(lowerRayOrigin, rayDirection, parkourRayParams)
-
-				if not headHit and lowerHit then
-					local success = fsm:transition(MovementStateDefs.LedgeVaulting)
+				if not stillClinging or humanoid.FloorMaterial ~= Enum.Material.Air or hangDuration >= MovementConstants.WallClingDuration then
+					local success = fsm:transition(MovementStateDefs.Falling)
 					if success then
-						MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.LedgeVaulting })
-
-						scheduleTask("LedgeVault", MovementConstants.LedgeVaultDuration, function()
-							if fsm.CurrentState == MovementStateDefs.LedgeVaulting then evaluateState(true) end
-						end)
+						fallStartTime = os.clock()
+						MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Falling })
 					end
 				end
 
@@ -158,6 +162,22 @@ function ClientMovementState.start()
 				if (not rightRay and not leftRay) or floorRay then
 					evaluateState(true)
 				end
+			end
+		end
+
+		-- Ends WallBoost the moment its vertical velocity actually crosses into descent (the real
+		-- physics apex) instead of after a guessed fixed duration — see the Heartbeat check below.
+		-- Also used as WallBoostDuration's fallback in case the velocity check never fires (e.g.
+		-- the launch got interrupted by a ceiling), so re-entrant calls once already Falling are a
+		-- harmless no-op (FSM.transition treats "already in this state" as a success with no re-fire).
+		local function exitWallBoostToFalling()
+			local success = fsm:transition(MovementStateDefs.Falling)
+			if success then
+				fallStartTime = os.clock()
+				-- The recovery-hop window opens right here, at the real apex, instead of at the
+				-- launch or after a fixed timer — matching when the player would actually want it.
+				wallClingDoubleJumpDeadline = os.clock() + MovementConstants.WallClingDoubleJumpWindow
+				MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Falling })
 			end
 		end
 
@@ -173,7 +193,7 @@ function ClientMovementState.start()
 				parkourUpdateAccumulator = 0
 
 				-- Only calculate environment if we are actually in a state that utilizes it
-				if fsm.CurrentState == MovementStateDefs.WallHanging or fsm.CurrentState == MovementStateDefs.WallBoost or fsm.CurrentState == MovementStateDefs.WallRunning then
+				if fsm.CurrentState == MovementStateDefs.WallHanging or fsm.CurrentState == MovementStateDefs.WallRunning then
 					processParkour()
 				end
 			end
@@ -196,7 +216,15 @@ function ClientMovementState.start()
 				return -- Still return early so we don't evaluate walking/idle logic
 			end
 
-			if fsm.CurrentState == MovementStateDefs.LedgeVaulting or fsm.CurrentState == MovementStateDefs.WallBoost then return end
+			if fsm.CurrentState == MovementStateDefs.WallBoost then
+				-- Apex-triggered, not time-triggered: the moment vertical velocity stops climbing
+				-- and starts falling, end WallBoost right there so the recovery-hop window opens
+				-- at the actual peak of the launch instead of a fixed duration later.
+				if hrp.AssemblyLinearVelocity.Y <= 0 then
+					exitWallBoostToFalling()
+				end
+				return
+			end
 
 			local isMoving = humanoid.MoveDirection.Magnitude > 0
 
@@ -258,6 +286,8 @@ function ClientMovementState.start()
 
 			elseif newState == Enum.HumanoidStateType.Landed then
 				hasDoubleJumped = false
+				wallJumpUsesRemaining = MovementConstants.WallJumpMaxUses
+				wallClingDoubleJumpDeadline = 0
 				local fallDuration = os.clock() - fallStartTime
 
 				local targetState = MovementStateDefs.LightLanding
@@ -305,20 +335,24 @@ function ClientMovementState.start()
 				end
 
 				if state == MovementStateDefs.WallHanging then
-					local success = fsm:transition(MovementStateDefs.WallBoost)
-					if success then
-						MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.WallBoost })
+					if wallJumpUsesRemaining > 0 then
+						local success = fsm:transition(MovementStateDefs.WallBoost)
+						if success then
+							wallJumpUsesRemaining -= 1
+							hasDoubleJumped = false -- boosting off the wall refreshes the double jump like a real air-jump reset
+							MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.WallBoost })
 
-						scheduleTask("WallBoost", MovementConstants.WallBoostDuration, function()
-							if fsm.CurrentState == MovementStateDefs.WallBoost then
-								if ParkourRaycastUtils.checkWallCling(hrp, parkourRayParams) and fsm:transition(MovementStateDefs.WallHanging) then
-									MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.WallHanging })
-								else
-									evaluateState(true)
+							-- WallBoost normally ends the instant its vertical velocity crosses into
+							-- descent (see the Heartbeat apex check above) — this timer is only a
+							-- fallback for the rare case that never fires (e.g. the launch got
+							-- interrupted by a ceiling), so it doesn't miss re-clinging forever.
+							scheduleTask("WallBoost", MovementConstants.WallBoostDuration, function()
+								if fsm.CurrentState == MovementStateDefs.WallBoost then
+									exitWallBoostToFalling()
 								end
-							end
-						end)
-						return Enum.ContextActionResult.Sink
+							end)
+							return Enum.ContextActionResult.Sink
+						end
 					end
 				end
 
@@ -336,11 +370,34 @@ function ClientMovementState.start()
 						end
 					end
 
-					if ParkourRaycastUtils.checkWallCling(hrp, parkourRayParams) then
+					if wallJumpUsesRemaining > 0 and ParkourRaycastUtils.checkWallCling(hrp, parkourRayParams) then
 						local success = fsm:transition(MovementStateDefs.WallHanging)
 						if success then
 							hasDoubleJumped = false
+							wallClingDoubleJumpDeadline = 0 -- reconnected; the recovery hop already did its job
+							wallHangStartTime = os.clock()
 							MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.WallHanging })
+							return Enum.ContextActionResult.Sink
+						end
+					end
+
+					-- Strictly a wall-jump recovery tool: only reachable in the brief window right
+					-- after a WallBoost, not as a disguised third jump from an ordinary fall.
+					if os.clock() < wallClingDoubleJumpDeadline then
+						local success = fsm:transition(MovementStateDefs.WallClingDoubleJump)
+						if success then
+							wallClingDoubleJumpDeadline = 0
+							MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.WallClingDoubleJump })
+
+							scheduleTask("WallClingDoubleJump", MovementConstants.WallClingDoubleJumpDuration, function()
+								if fsm.CurrentState == MovementStateDefs.WallClingDoubleJump then
+									local fallSuccess = fsm:transition(MovementStateDefs.Falling)
+									if fallSuccess then
+										fallStartTime = os.clock()
+										MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Falling })
+									end
+								end
+							end)
 							return Enum.ContextActionResult.Sink
 						end
 					end

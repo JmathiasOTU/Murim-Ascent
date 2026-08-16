@@ -43,16 +43,33 @@ function MovementPhysicsController.start()
 		local function handleDashing()
 			setupGroundConstraint()
 
-			-- Free-direction dash: velocity follows the held input exactly (no 4-way
-			-- snapping) — falls back to a backward dodge when no direction is held.
-			local moveVector = humanoid.MoveDirection
-			local dashDirection = if moveVector.Magnitude > MovementConstants.WalkThreshold then moveVector.Unit else -hrp.CFrame.LookVector
+			local speedValue = Instance.new("NumberValue")
+			speedValue.Value = MovementConstants.DashPower
 
-			constraintPool.velocity.VectorVelocity = dashDirection * MovementConstants.DashPower
-			local targetEndVelocity = dashDirection * MovementConstants.WalkSpeed
+			-- Decay back to whatever ground speed we were already carrying (walk/run/sprint)
+			-- instead of always bleeding down to WalkSpeed — Dashing doesn't touch
+			-- humanoid.WalkSpeed itself, so it still reflects the state we dashed out of.
+			local targetEndSpeed = humanoid.WalkSpeed
+
+			-- Re-reads direction every frame (held input, or a backward dodge off current facing
+			-- when nothing's held) instead of locking it in at launch, so turning the camera in
+			-- shift-lock curves the dash instead of leaving it committed to whatever heading Q
+			-- was pressed on.
+			steerConnection = RunService.Heartbeat:Connect(function()
+				if not constraintPool.velocity.Enabled then return end
+
+				local moveVector = humanoid.MoveDirection
+				local dashDirection = if moveVector.Magnitude > MovementConstants.WalkThreshold then moveVector.Unit else -hrp.CFrame.LookVector
+
+				constraintPool.velocity.VectorVelocity = dashDirection * speedValue.Value
+			end)
 
 			local tweenInfo = TweenInfo.new(MovementConstants.DashDuration, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out)
-			activeTween = TweenService:Create(constraintPool.velocity, tweenInfo, { VectorVelocity = targetEndVelocity })
+			activeTween = TweenService:Create(speedValue, tweenInfo, { Value = targetEndSpeed })
+
+			activeTween.Completed:Connect(function()
+				speedValue:Destroy()
+			end)
 			activeTween:Play()
 		end
 
@@ -91,20 +108,31 @@ function MovementPhysicsController.start()
 
 		local function handleWallHanging()
 			setupWallConstraint()
-			constraintPool.velocity.VectorVelocity = Vector3.zero
+
+			-- Not a frozen hang — grip slowly loses to gravity the longer you hang, mirroring the
+			-- reference cling: slide speed ramps up from a standstill instead of holding flat until
+			-- WallClingDuration cuts it off outright.
+			local hangStartTime = os.clock()
+			steerConnection = RunService.Heartbeat:Connect(function()
+				if not constraintPool.velocity.Enabled then return end
+
+				local elapsed = os.clock() - hangStartTime
+				local slideSpeed = math.min(elapsed * MovementConstants.WallClingSlideAcceleration, MovementConstants.WallClingMaxSlideSpeed)
+				constraintPool.velocity.VectorVelocity = Vector3.new(0, -slideSpeed, 0)
+			end)
 		end
 
 		local function handleWallBoost()
-			setupWallConstraint()
+			-- A launch, not a sustained push: kick away from the wall and up, then let normal
+			-- gravity/air control take over exactly like a double jump does.
+			cleanupDash()
+			humanoid.AutoRotate = true
 
-			local ray = workspace:Raycast(hrp.CFrame.Position, hrp.CFrame.LookVector * 5, parkourRayParams)
-			local pushIntoWallVector = ray and (-ray.Normal * 1) or (hrp.CFrame.LookVector * 1)
-			local launchVelocity = Vector3.new(0, MovementConstants.WallBoostPower, 0)
-			constraintPool.velocity.VectorVelocity = launchVelocity + pushIntoWallVector
-
-			local tweenInfo = TweenInfo.new(MovementConstants.WallBoostDuration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-			activeTween = TweenService:Create(constraintPool.velocity, tweenInfo, { VectorVelocity = Vector3.new(0, 0, 0) + pushIntoWallVector })
-			activeTween:Play()
+			-- WallHanging orients us to face INTO the wall (see ParkourRaycastUtils.checkWallCling),
+			-- so "away from the wall" is the opposite of our current LookVector.
+			local awayFromWall = -hrp.CFrame.LookVector
+			local launchVelocity = (awayFromWall * MovementConstants.WallBoostBackPower) + Vector3.new(0, MovementConstants.WallBoostPower, 0)
+			hrp.AssemblyLinearVelocity = launchVelocity
 		end
 
 		local function sampleWallRunHit()
@@ -207,6 +235,15 @@ function MovementPhysicsController.start()
 			hrp.AssemblyLinearVelocity = launchVel
 		end
 
+		-- 3.75 WALL CLING DOUBLE JUMP (small recovery hop off a WallBoost, not a general air jump)
+		local function handleWallClingDoubleJump()
+			cleanupDash()
+			humanoid.AutoRotate = true
+
+			local currentVel = hrp.AssemblyLinearVelocity
+			hrp.AssemblyLinearVelocity = Vector3.new(currentVel.X, MovementConstants.WallClingDoubleJumpVelocity, currentVel.Z)
+		end
+
 		-- 3.8 DOUBLE JUMPING
 		local function handleDoubleJumping()
 			cleanupDash()
@@ -250,28 +287,13 @@ function MovementPhysicsController.start()
 			activeTween:Play()
 		end
 
-		-- 4. LEDGE VAULTING
-		local function handleLedgeVaulting()
-			cleanupDash()
-			humanoid.AutoRotate = true
-
-			VelocityConstraintUtils.activate(constraintPool, FULL_LOCK_FORCE)
-
-			local forwardVector = hrp.CFrame.LookVector * MovementConstants.LedgeVaultForwardForce
-			local upVector = Vector3.new(0, MovementConstants.LedgeVaultUpwardForce, 0)
-			constraintPool.velocity.VectorVelocity = forwardVector + upVector
-
-			local tweenInfo = TweenInfo.new(MovementConstants.LedgeVaultDuration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-			activeTween = TweenService:Create(constraintPool.velocity, tweenInfo, { VectorVelocity = forwardVector * 0.5 })
-			activeTween:Play()
-		end
-
 		-- 5. EXIT CLEANUP — any state without a dedicated handler above
 		local function handleExit(oldState)
-			-- Dashing decays to WalkSpeed via tween, but that residual momentum still carries
-			-- into normal movement once the constraint is gone — shed most of it here so the
-			-- dash stops on a dime instead of trailing off.
-			if oldState == MovementStateDefs.Dashing then
+			-- Dashing decays back to our pre-dash ground speed via tween, but if that speed was
+			-- only WalkSpeed the residual still carries an unwanted trailing slide into normal
+			-- movement — shed most of it here so the dash stops on a dime. Skip the brake while
+			-- still running/sprinting so that momentum carries straight through instead of dipping.
+			if oldState == MovementStateDefs.Dashing and humanoid.WalkSpeed <= MovementConstants.WalkSpeed then
 				local currentVelocity = hrp.AssemblyLinearVelocity
 				hrp.AssemblyLinearVelocity = Vector3.new(
 					currentVelocity.X * (1 - MovementConstants.DashBrakeForce),
@@ -295,8 +317,8 @@ function MovementPhysicsController.start()
 			[MovementStateDefs.AirDashing] = handleAirDashing,
 			[MovementStateDefs.LedgeJumping] = handleLedgeJumping,
 			[MovementStateDefs.DoubleJumping] = handleDoubleJumping,
+			[MovementStateDefs.WallClingDoubleJump] = handleWallClingDoubleJump,
 			[MovementStateDefs.HeavyLanding] = handleHeavyLanding,
-			[MovementStateDefs.LedgeVaulting] = handleLedgeVaulting,
 		}
 
 		local fsmConnection = fsm.StateChanged:Connect(function(oldState, newState)

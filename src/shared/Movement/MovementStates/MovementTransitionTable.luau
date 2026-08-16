@@ -94,7 +94,6 @@ return {
 		[MovementStateDefs.AirDashing] = true, -- Add this
 		[MovementStateDefs.WallHanging] = true,
 		[MovementStateDefs.WallRunning] = true,
-		[MovementStateDefs.LedgeVaulting] = true,
 	},
 	[MovementStateDefs.DoubleJumping] = {
 		[MovementStateDefs.Falling] = true,
@@ -103,7 +102,6 @@ return {
 		[MovementStateDefs.WallHanging] = true,
 		[MovementStateDefs.LightLanding] = true,
 		[MovementStateDefs.HeavyLanding] = true,
-		[MovementStateDefs.LedgeVaulting] = true,
 	},
 	[MovementStateDefs.Falling] = {
 		[MovementStateDefs.Idle] = true,
@@ -114,13 +112,20 @@ return {
 		[MovementStateDefs.CrouchWalking] = false,
 		[MovementStateDefs.Dashing] = true,
 		[MovementStateDefs.DoubleJumping] = true,
+		[MovementStateDefs.WallClingDoubleJump] = true,
 		[MovementStateDefs.AirDashing] = true, -- Add this
 		[MovementStateDefs.WallHanging] = true,
 		[MovementStateDefs.WallRunning] = true,
-		[MovementStateDefs.LedgeVaulting] = true,
 		[MovementStateDefs.Sliding] = false,
 		[MovementStateDefs.LightLanding] = true,
 		[MovementStateDefs.HeavyLanding] = true,
+	},
+	[MovementStateDefs.WallClingDoubleJump] = {
+		-- Strictly a wall-jump recovery hop, not a general extra air jump — see the
+		-- wallClingDoubleJumpDeadline gate in ClientMovementState, which only unlocks this for a
+		-- short window right after a WallBoost. Always resolves back to Falling; re-grabbing is a
+		-- separate press from there.
+		[MovementStateDefs.Falling] = true,
 	},
 
 	[MovementStateDefs.AirDashing] = {
@@ -128,7 +133,6 @@ return {
 		[MovementStateDefs.DoubleJumping] = true,
 		[MovementStateDefs.WallHanging] = true,
 		[MovementStateDefs.WallRunning] = true,
-		[MovementStateDefs.LedgeVaulting] = true,
 		[MovementStateDefs.Idle] = true,
 		[MovementStateDefs.Walking] = true,
 		[MovementStateDefs.Running] = true,
@@ -176,14 +180,12 @@ return {
 		[MovementStateDefs.WallRunning] = true,
 		[MovementStateDefs.Jumping] = true,
 		[MovementStateDefs.Falling] = true,
-		[MovementStateDefs.LedgeVaulting] = true, -- ADD THIS HERE
 	},
 	[MovementStateDefs.WallBoost] = {
-		[MovementStateDefs.WallHanging] = true,
-		[MovementStateDefs.Jumping] = true,
+		-- WallBoost is a fixed-length launch impulse (see MovementConstants.WallBoostDuration) that
+		-- always ends by falling — re-clinging requires actually flying back into a wall and
+		-- pressing space again from Jumping/Falling, not an automatic re-stick out of WallBoost.
 		[MovementStateDefs.Falling] = true,
-		[MovementStateDefs.LedgeVaulting] = true,
-		[MovementStateDefs.Sprinting] = true,
 	},
 	[MovementStateDefs.WallRunning] = {
 		[MovementStateDefs.WallHanging] = true,
@@ -196,7 +198,6 @@ return {
 		[MovementStateDefs.Running] = true,
 		[MovementStateDefs.Sprinting] = true,
 		[MovementStateDefs.Crouching] = true,
-		[MovementStateDefs.LedgeVaulting] = true, -- ADD THIS HERE
 	},
 	[MovementStateDefs.WallLeaping] = {
 		[MovementStateDefs.Falling] = true,
@@ -207,22 +208,6 @@ return {
 		[MovementStateDefs.Idle] = true,
 		[MovementStateDefs.Walking] = true,
 		[MovementStateDefs.Running] = true,
-		[MovementStateDefs.LightLanding] = true,
-		[MovementStateDefs.HeavyLanding] = true,
-	},
-	[MovementStateDefs.LedgeVaulting] = {
-		[MovementStateDefs.Idle] = true,
-		[MovementStateDefs.Walking] = true,
-		[MovementStateDefs.Running] = true,
-		[MovementStateDefs.Crouching] = true,
-		[MovementStateDefs.AirDashing] = true,
-		[MovementStateDefs.CrouchWalking] = true,
-		[MovementStateDefs.Sliding] = true,
-		[MovementStateDefs.Jumping] = true,
-		[MovementStateDefs.Falling] = true,
-		[MovementStateDefs.Sprinting] = true,
-		[MovementStateDefs.WallHanging] = true,
-		[MovementStateDefs.WallRunning] = true,
 		[MovementStateDefs.LightLanding] = true,
 		[MovementStateDefs.HeavyLanding] = true,
 	},

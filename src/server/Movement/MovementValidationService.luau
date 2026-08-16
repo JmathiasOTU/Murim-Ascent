@@ -125,12 +125,14 @@ function MovementValidationService.start()
 			intentWindowStart = os.clock(),
 			lastPosition = nil,
 			lastPositionCheckTime = 0,
+			wallJumpUsesRemaining = MovementConstants.WallJumpMaxUses,
 		}
 
 		player.CharacterAdded:Connect(function()
 			local profile = playerProfiles[player]
 			profile.currentState = MovementStateDefs.Idle
 			profile.lastPosition = nil
+			profile.wallJumpUsesRemaining = MovementConstants.WallJumpMaxUses
 		end)
 	end)
 
@@ -185,8 +187,7 @@ function MovementValidationService.start()
 			-- Proximity & Raycast Sanity Checks
 			if targetState == MovementStateDefs.WallRunning or
 			   targetState == MovementStateDefs.WallHanging or
-			   targetState == MovementStateDefs.WallBoost or
-			   targetState == MovementStateDefs.LedgeVaulting then
+			   targetState == MovementStateDefs.WallBoost then
 
 				if not isNearWallOrLedge(character, player) then
 					rubberbandReject(character, player, string.format("triggered parkour %s but no wall/ledge was found nearby!", targetState))
@@ -195,11 +196,33 @@ function MovementValidationService.start()
 				end
 			end
 
+			-- Wall-jump chain limit: mirrors the client's wallJumpUsesRemaining so a modified
+			-- client can't just skip the cap and climb indefinitely off a single wall.
+			if targetState == MovementStateDefs.WallBoost then
+				if profile.wallJumpUsesRemaining <= 0 then
+					warn(string.format("[Anti-Exploit] %s attempted to WallBoost with no wall jumps remaining.", player.Name))
+					sendCorrection(player, profile, MovementStateChanged)
+					return
+				end
+				profile.wallJumpUsesRemaining -= 1
+			elseif targetState == MovementStateDefs.LightLanding or targetState == MovementStateDefs.HeavyLanding then
+				profile.wallJumpUsesRemaining = MovementConstants.WallJumpMaxUses
+			end
+
 			-- Passed all security checks: commit the server's tracked state, sync WalkSpeed,
-			-- and broadcast to everyone else so they see this player's Qinggong state too
+			-- and broadcast to everyone else so they see this player's Qinggong state too.
+			-- Deliberately excludes the acting player: they already have this state from their
+			-- own prediction, and short-lived states (Jumping, LedgeJumping) can advance to their
+			-- next state (Falling) before this echo round-trips back — which the client's
+			-- correction logic would otherwise misread as a rejection and force-replay, double-
+			-- firing the state's VFX/SFX.
 			profile.currentState = targetState
 			MovementStateService.applyWalkSpeed(character, targetState)
-			MovementStateChanged:FireAllClients(player, targetState)
+			for _, otherPlayer in ipairs(Players:GetPlayers()) do
+				if otherPlayer ~= player then
+					MovementStateChanged:FireClient(otherPlayer, player, targetState)
+				end
+			end
 		end
 	end)
 end

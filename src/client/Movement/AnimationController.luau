@@ -24,6 +24,7 @@ local ANIMATION_IDS = {
 
 	[MovementStateDefs.WallHanging] = "rbxassetid://132023512277724",
 	[MovementStateDefs.WallBoost] = "rbxassetid://113152742747545",
+	[MovementStateDefs.WallClingDoubleJump] = "rbxassetid://129166635501691", -- placeholder; swap in the real WallClingDoubleJump animation ID
 	[MovementStateDefs.LedgeJumping] = "rbxassetid://137786735677269",
 	[MovementStateDefs.LightLanding] = "rbxassetid://133945243946271",
 	[MovementStateDefs.HeavyLanding] = "rbxassetid://105831901844953",
@@ -55,13 +56,6 @@ local DASH_ANIMATION_IDS = {
 	DashRight = "rbxassetid://109325396920599",
 }
 
--- 2.5 Randomized Vault Animations
-local VAULT_ANIMATION_IDS = {
-	"rbxassetid://127078260749232",
-	"rbxassetid://123684821724041",
-	"rbxassetid://118680114427783",
-}
-
 -- Lean Constants
 local MAX_LEAN_STRAFE = math.rad(MovementConstants.LeanMaxAngleDegrees)
 local MAX_LEAN_FORWARD = math.rad(MovementConstants.LeanMaxAngleDegrees)
@@ -91,7 +85,6 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 
 	local loadedTracks = {}
 	local loadedDashTracks = {}
-	local loadedVaultTracks = {}
 
 	local fsmConnection = nil
 	local renderConnection = nil
@@ -110,14 +103,14 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 		local track = animator:LoadAnimation(anim)
 
 		-- Only loop tracks that aren't jumps, boosts, impacts, or air dashes!
-		if stateName == MovementStateDefs.Jumping or stateName == "DoubleJump1" or stateName == "DoubleJump2" or stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.AirDashing or stateName == MovementStateDefs.WallBoost or stateName == "WallLatch" or stateName == "WallLeapLeft" or stateName == "WallLeapRight" or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding then
+		if stateName == MovementStateDefs.Jumping or stateName == "DoubleJump1" or stateName == "DoubleJump2" or stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.AirDashing or stateName == MovementStateDefs.WallBoost or stateName == MovementStateDefs.WallClingDoubleJump or stateName == "WallLatch" or stateName == "WallLeapLeft" or stateName == "WallLeapRight" or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding then
 			track.Looped = false
 		else
 			track.Looped = true
 		end
 
 		-- Force Priorities to avoid Roblox default script bleeding
-		if stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding or stateName == MovementStateDefs.AirDashing then
+		if stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding or stateName == MovementStateDefs.AirDashing or stateName == MovementStateDefs.WallClingDoubleJump then
 			track.Priority = Enum.AnimationPriority.Action
 		else
 			-- Forces standard movement (Walk/Run/Idle) to dominate Roblox defaults
@@ -139,15 +132,6 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 
 	if loadedTracks[fsm.CurrentState] then
 		loadedTracks[fsm.CurrentState]:Play()
-	end
-
-	for _, animId in ipairs(VAULT_ANIMATION_IDS) do
-		local anim = Instance.new("Animation")
-		anim.AnimationId = animId
-		local track = animator:LoadAnimation(anim)
-		track.Looped = false
-		track.Priority = Enum.AnimationPriority.Action
-		table.insert(loadedVaultTracks, track)
 	end
 
 	-- 5. Handle State Transitions
@@ -240,13 +224,6 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 		end
 	end
 
-	local function playLedgeVaulting()
-		if #loadedVaultTracks > 0 then
-			local randomIndex = math.random(1, #loadedVaultTracks)
-			loadedVaultTracks[randomIndex]:Play(0.1)
-		end
-	end
-
 	local function playDoubleJumping()
 		local trackName = math.random(1, 2) == 1 and "DoubleJump1" or "DoubleJump2"
 		local track = loadedTracks[trackName]
@@ -310,7 +287,6 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 		[MovementStateDefs.WallHanging] = playWallHanging,
 		[MovementStateDefs.WallRunning] = playWallRunning,
 		[MovementStateDefs.WallLeaping] = playWallLeaping,
-		[MovementStateDefs.LedgeVaulting] = playLedgeVaulting,
 		[MovementStateDefs.DoubleJumping] = playDoubleJumping,
 		[MovementStateDefs.Walking] = playWalking,
 	}
@@ -380,10 +356,6 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 			track:Destroy()
 		end
 		for _, track in pairs(loadedDashTracks) do
-			track:Stop()
-			track:Destroy()
-		end
-		for _, track in ipairs(loadedVaultTracks) do
 			track:Stop()
 			track:Destroy()
 		end

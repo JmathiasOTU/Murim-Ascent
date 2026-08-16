@@ -9,9 +9,9 @@ function ParkourRaycastUtils.checkWallCling(hrp, rayParams)
 	local right = hrp.CFrame.RightVector
 	local offset = 1
 
-	local r1 = workspace:Raycast(origin, look * 3, rayParams)
-	local r2 = workspace:Raycast(origin + (right * offset), look * 3, rayParams)
-	local r3 = workspace:Raycast(origin - (right * offset), look * 3, rayParams)
+	local r1 = workspace:Raycast(origin, look * MovementConstants.WallClingDetectionRange, rayParams)
+	local r2 = workspace:Raycast(origin + (right * offset), look * MovementConstants.WallClingDetectionRange, rayParams)
+	local r3 = workspace:Raycast(origin - (right * offset), look * MovementConstants.WallClingDetectionRange, rayParams)
 
 	if r1 and r2 and r3 then
 		if r1.Instance.CanCollide and r2.Instance.CanCollide and r3.Instance.CanCollide then
@@ -22,6 +22,24 @@ function ParkourRaycastUtils.checkWallCling(hrp, rayParams)
 				return true
 			end
 		end
+	end
+	return false
+end
+
+-- Same three-ray check as checkWallCling but non-mutating (no CFrame snap) — used every parkour
+-- tick to confirm we're still pressed against a wall while WallHanging, not just at grab time.
+function ParkourRaycastUtils.checkStillClinging(hrp, rayParams)
+	local origin = hrp.CFrame.Position
+	local look = hrp.CFrame.LookVector
+	local right = hrp.CFrame.RightVector
+	local offset = 1
+
+	local r1 = workspace:Raycast(origin, look * MovementConstants.WallClingDetectionRange, rayParams)
+	local r2 = workspace:Raycast(origin + (right * offset), look * MovementConstants.WallClingDetectionRange, rayParams)
+	local r3 = workspace:Raycast(origin - (right * offset), look * MovementConstants.WallClingDetectionRange, rayParams)
+
+	if r1 and r2 and r3 then
+		return r1.Instance.CanCollide and r2.Instance.CanCollide and r3.Instance.CanCollide
 	end
 	return false
 end
