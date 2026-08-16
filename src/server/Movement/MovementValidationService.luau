@@ -19,11 +19,6 @@ local function isNearWallOrLedge(character, player)
 	local hrp = character:FindFirstChild("HumanoidRootPart")
 	if not hrp then return false end
 
-	local params = RaycastParams.new()
-	params.FilterType = Enum.RaycastFilterType.Exclude
-	params.FilterDescendantsInstances = {character}
-	params.IgnoreWater = true
-
 	-- The server's replicated HRP position lags the client's by roughly one network round trip.
 	-- Entering WallRunning/WallHanging/etc. happens mid-jump at the client's highest speeds, so by
 	-- the time this packet is processed the character can have already drifted clear of a wall it
@@ -33,16 +28,24 @@ local function isNearWallOrLedge(character, player)
 	local latency = math.min(player:GetNetworkPing() / 2, MovementConstants.WallProximityLatencyCap)
 	local origin = hrp.Position + (hrp.AssemblyLinearVelocity * latency)
 
-	local rayDistance = MovementConstants.WallProximityCheckDistance
-	local look = hrp.CFrame.LookVector * rayDistance
-	local right = hrp.CFrame.RightVector * rayDistance
+	-- Deliberately orientation-agnostic: a directional raycast (Look/Right vectors) sounds more
+	-- precise, but AutoRotate and WallRunning's AlignOrientation both take real time to converge
+	-- on the new facing — chaining a WallLeap straight into another wall run means the server can
+	-- process the request before the character's replicated orientation has caught up, so a
+	-- direction-tied ray can point right past a wall that's genuinely inches away. A radius check
+	-- doesn't care which way they're facing, only whether something solid is actually nearby —
+	-- consistent with this being a coarse backstop, not precision anti-cheat.
+	local overlapParams = OverlapParams.new()
+	overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+	overlapParams.FilterDescendantsInstances = {character}
 
-	local hitLook = Workspace:Raycast(origin, look, params)
-	local hitRight = Workspace:Raycast(origin, right, params)
-	local hitLeft = Workspace:Raycast(origin, -right, params)
-
-	-- If any of these rays hit a solid object, the server agrees they are near a wall
-	return hitLook or hitRight or hitLeft
+	local nearbyParts = Workspace:GetPartBoundsInRadius(origin, MovementConstants.WallProximityCheckDistance, overlapParams)
+	for _, part in ipairs(nearbyParts) do
+		if part.CanCollide then
+			return true
+		end
+	end
+	return false
 end
 
 -- Helper: kills momentum and briefly anchors the HRP to force a rubberband correction
@@ -54,7 +57,7 @@ local function rubberbandReject(character, player, reason)
 		hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
 		hrp.Anchored = true
 
-		task.delay(0.1, function()
+		task.delay(MovementConstants.RubberbandAnchorDuration, function()
 			if hrp then
 				hrp.Anchored = false
 			end
@@ -184,10 +187,14 @@ function MovementValidationService.start()
 				profile.lastDashTime = now
 			end
 
-			-- Proximity & Raycast Sanity Checks
+			-- Proximity & Raycast Sanity Checks. WallLeaping is only ever reachable from a
+			-- currentState of WallRunning per the transition table above (itself already gated by
+			-- this same check), so this is defense-in-depth rather than closing an open hole — but
+			-- the master guide calls out WallLeaping by name here, so it gets the same check too.
 			if targetState == MovementStateDefs.WallRunning or
 			   targetState == MovementStateDefs.WallHanging or
-			   targetState == MovementStateDefs.WallBoost then
+			   targetState == MovementStateDefs.WallBoost or
+			   targetState == MovementStateDefs.WallLeaping then
 
 				if not isNearWallOrLedge(character, player) then
 					rubberbandReject(character, player, string.format("triggered parkour %s but no wall/ledge was found nearby!", targetState))

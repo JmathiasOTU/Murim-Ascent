@@ -5,6 +5,7 @@ local Debris = game:GetService("Debris")
 local ClientMovementState = require(script.Parent.Parent.Movement.ClientMovementState)
 local RemoteMovementState = require(script.Parent.Parent.Movement.RemoteMovementState)
 local MovementStateDefs = require(ReplicatedStorage.Shared.Movement.MovementStates.MovementStateDefs)
+local MovementConstants = require(ReplicatedStorage.Shared.Movement.MovementConstants)
 local RemoteRegistry = require(ReplicatedStorage.Shared.Net.RemoteRegistry)
 
 local VFXPlaybackController = {}
@@ -29,7 +30,7 @@ local BLOCK_SOUNDS = {
 }
 
 local SPRINT_VFX_FORWARD_OFFSET = 4 -- studs ahead of HumanoidRootPart the wind trail is welded at
-local SPRINT_VFX_NAMES = { "SprintVFX", "SprintVFX2" } -- every prefab cloned/welded while Sprinting
+local SPRINT_VFX_NAMES = { "SprintVFX" } -- every prefab cloned/welded while Sprinting
 
 -- States the FSM can pass through mid-sprint (jump, wall run, land, etc.) that should NOT cut the
 -- trail. Only leaving Sprinting for a state outside this set (Walking, Idle, Crouching, an
@@ -47,6 +48,8 @@ local SPRINT_VFX_CONTINUATION_STATES = {
 	[MovementStateDefs.LedgeJumping] = true,
 	[MovementStateDefs.LightLanding] = true,
 	[MovementStateDefs.HeavyLanding] = true,
+	[MovementStateDefs.Sliding] = true,
+	[MovementStateDefs.Dashing] = true,
 }
 
 -- Picks a random sound from the given table, fast-forwards past its dead air, and plays it
@@ -84,6 +87,56 @@ local function playBurstVFX(vfxName: string, targetCFrame: CFrame)
 	end
 
 	Debris:AddItem(vfxClone, ONE_SHOT_VFX_CLEANUP_TIME)
+end
+
+-- HumanoidRootPart sits at roughly torso height, not the feet — bursting a landing VFX straight at
+-- hrp.CFrame plants it a couple studs up in the air. Raycast down to the actual floor instead (also
+-- handles slopes/stairs correctly, unlike a fixed vertical offset).
+local function getGroundCFrame(hrp: BasePart, character: Instance): CFrame
+	local rayParams = RaycastParams.new()
+	rayParams.FilterType = Enum.RaycastFilterType.Exclude
+	rayParams.FilterDescendantsInstances = {character}
+	rayParams.IgnoreWater = true
+
+	local rayResult = workspace:Raycast(hrp.Position, Vector3.new(0, -MovementConstants.GroundVFXCheckDistance, 0), rayParams)
+	if rayResult then
+		return CFrame.new(rayResult.Position)
+	end
+	return hrp.CFrame -- fallback: no floor found within range, shouldn't normally happen right after a landing
+end
+
+-- R6-only per the project's rig policy (AI Master Class Guide, section 1) — matches Attachment1
+-- (top) / Attachment2 (bottom) of each limb against a Trail running between them
+local LIMB_TRAIL_LIMBS = { "Right Arm", "Left Arm", "Right Leg", "Left Leg" }
+
+-- Clones a paired Attachment1/Attachment2 + Trail from a named VFX.Movement prefab (DashTrailVfx,
+-- AirJumpTrailVfx, ...) onto each limb, so the character streaks a motion trail off both arms and
+-- legs for the given duration. Shared by anything that wants this "streaking limbs" look.
+local function playLimbTrail(vfxName: string, character: Instance, duration: number)
+	local trailTemplate = MovementVFXFolder:FindFirstChild(vfxName)
+	if not trailTemplate then
+		warn("Missing " .. vfxName .. " in ReplicatedStorage.Assets.VFX.Movement")
+		return
+	end
+
+	for _, limbName in ipairs(LIMB_TRAIL_LIMBS) do
+		local limb = character:FindFirstChild(limbName)
+		if limb then
+			local topAttachment = trailTemplate.Attachment1:Clone()
+			local bottomAttachment = trailTemplate.Attachment2:Clone()
+			topAttachment.Parent = limb
+			bottomAttachment.Parent = limb
+
+			local trail = trailTemplate.Trail:Clone()
+			trail.Attachment0 = topAttachment
+			trail.Attachment1 = bottomAttachment
+			trail.Parent = limb
+
+			Debris:AddItem(topAttachment, duration + MovementConstants.LimbTrailFadeBuffer)
+			Debris:AddItem(bottomAttachment, duration + MovementConstants.LimbTrailFadeBuffer)
+			Debris:AddItem(trail, duration + MovementConstants.LimbTrailFadeBuffer)
+		end
+	end
 end
 
 -- Clones each named prefab from VFX.Combat under `parent` and bursts its emitters, all in the same frame
@@ -188,6 +241,15 @@ local function setupCharacterVFX(fsm, character)
 			playBurstVFX("LedgeJumpVFX", hrp.CFrame)
 		elseif newState == MovementStateDefs.WallLeaping then
 			playBurstVFX("WallLeapVfx", hrp.CFrame)
+		elseif newState == MovementStateDefs.DoubleJumping then
+			playBurstVFX("AirJumpVfx", hrp.CFrame)
+			playLimbTrail("AirJumpTrailVfx", character, MovementConstants.DoubleJumpDuration)
+		elseif newState == MovementStateDefs.HeavyLanding then
+			playBurstVFX("HardLandVfx", getGroundCFrame(hrp, character))
+		elseif newState == MovementStateDefs.Dashing then
+			playLimbTrail("DashTrailVfx", character, MovementConstants.DashDuration)
+		elseif newState == MovementStateDefs.AirDashing then
+			playLimbTrail("DashTrailVfx", character, MovementConstants.AirDashDuration)
 		end
 
 		-- SPRINTING: Toggle the continuous trail on/off. Passing through a continuation state

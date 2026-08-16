@@ -302,6 +302,22 @@ function MovementPhysicsController.start()
 				)
 			end
 
+			-- HeavyLanding forces a MINIMUM of HeavyLandMinSpeed (200 studs/s) horizontal velocity
+			-- via a tween that only decays down to WalkSpeed over HeavyLandDuration. Cutting the
+			-- state short (e.g. jump-canceling the recovery) tears the constraint down mid-tween,
+			-- but the velocity it was forcing at that instant doesn't reset — it just becomes real
+			-- velocity, and since jumping only adds a vertical impulse, that launches the player
+			-- horizontally at whatever speed the roll hadn't decayed past yet. Cap it down here so
+			-- an early exit can't inherit an undecayed 200+ stud/s burst.
+			if oldState == MovementStateDefs.HeavyLanding then
+				local currentVelocity = hrp.AssemblyLinearVelocity
+				local horizontalVelocity = Vector3.new(currentVelocity.X, 0, currentVelocity.Z)
+				if horizontalVelocity.Magnitude > MovementConstants.WalkSpeed then
+					local cappedHorizontal = horizontalVelocity.Unit * MovementConstants.WalkSpeed
+					hrp.AssemblyLinearVelocity = Vector3.new(cappedHorizontal.X, currentVelocity.Y, cappedHorizontal.Z)
+				end
+			end
+
 			cleanupDash()
 			humanoid.AutoRotate = true
 		end

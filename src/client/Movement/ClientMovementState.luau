@@ -356,7 +356,10 @@ function ClientMovementState.start()
 					end
 				end
 
-				if state == MovementStateDefs.Jumping or state == MovementStateDefs.Falling then
+				-- WallLeaping is included alongside Jumping/Falling so slamming into a new wall
+				-- mid-leap can grab/run it immediately, instead of the press being swallowed until
+				-- WallLeapDuration's own timer expires and drops the FSM into Falling.
+				if state == MovementStateDefs.Jumping or state == MovementStateDefs.Falling or state == MovementStateDefs.WallLeaping then
 					if ParkourRaycastUtils.checkWallRun(hrp, humanoid, parkourRayParams) then
 						local success = fsm:transition(MovementStateDefs.WallRunning)
 						if success then

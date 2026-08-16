@@ -7,7 +7,7 @@ function ParkourRaycastUtils.checkWallCling(hrp, rayParams)
 	local origin = hrp.CFrame.Position
 	local look = hrp.CFrame.LookVector
 	local right = hrp.CFrame.RightVector
-	local offset = 1
+	local offset = MovementConstants.WallSideCheckOffset
 
 	local r1 = workspace:Raycast(origin, look * MovementConstants.WallClingDetectionRange, rayParams)
 	local r2 = workspace:Raycast(origin + (right * offset), look * MovementConstants.WallClingDetectionRange, rayParams)
@@ -17,7 +17,7 @@ function ParkourRaycastUtils.checkWallCling(hrp, rayParams)
 		if r1.Instance.CanCollide and r2.Instance.CanCollide and r3.Instance.CanCollide then
 			local upVector = Vector3.new(0, 1, 0)
 			local upDot = math.abs(r1.Normal:Dot(upVector))
-			if upDot < 0.2 then
+			if upDot < MovementConstants.WallFlatnessThreshold then
 				hrp.CFrame = CFrame.lookAt(hrp.Position, hrp.Position - r1.Normal)
 				return true
 			end
@@ -32,7 +32,7 @@ function ParkourRaycastUtils.checkStillClinging(hrp, rayParams)
 	local origin = hrp.CFrame.Position
 	local look = hrp.CFrame.LookVector
 	local right = hrp.CFrame.RightVector
-	local offset = 1
+	local offset = MovementConstants.WallSideCheckOffset
 
 	local r1 = workspace:Raycast(origin, look * MovementConstants.WallClingDetectionRange, rayParams)
 	local r2 = workspace:Raycast(origin + (right * offset), look * MovementConstants.WallClingDetectionRange, rayParams)
@@ -55,7 +55,7 @@ function ParkourRaycastUtils.checkWallRun(hrp, humanoid, rayParams)
 	if hit and hit.Instance.CanCollide then
 		local upVector = Vector3.new(0, 1, 0)
 		local upDot = math.abs(hit.Normal:Dot(upVector))
-		if upDot < 0.2 then
+		if upDot < MovementConstants.WallFlatnessThreshold then
 			return true
 		end
 	end

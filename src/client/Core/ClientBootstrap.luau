@@ -4,6 +4,7 @@ local RemoteMovementState = require(script.Parent.Parent.Movement.RemoteMovement
 local AnimationController = require(script.Parent.Parent.Movement.AnimationController)
 local MovementController = require(script.Parent.Parent.Movement.MovementController)
 local MovementPhysicsController = require(script.Parent.Parent.Movement.MovementPhysicsController)
+local CameraController = require(script.Parent.Parent.Movement.CameraController)
 local VFXPlaybackController = require(script.Parent.Parent.VFX.VFXPlaybackController)
 local FootstepController = require(script.Parent.Parent.VFX.FootstepController)
 local MovementSFXController = require(script.Parent.Parent.VFX.MovementSFXController)
@@ -21,6 +22,7 @@ function ClientBootstrap.start()
 	AnimationController.start()
 	MovementController.start() -- Your existing procedural lean script
 	MovementPhysicsController.start()
+	CameraController.start()
 	VFXPlaybackController.start()
 	MovementSFXController.start()
 	return nil

@@ -44,6 +44,8 @@ local SPRINT_SFX_CONTINUATION_STATES = {
 	[MovementStateDefs.LedgeJumping] = true,
 	[MovementStateDefs.LightLanding] = true,
 	[MovementStateDefs.HeavyLanding] = true,
+	[MovementStateDefs.Sliding] = true,
+	[MovementStateDefs.Dashing] = true,
 }
 
 local ONE_SHOT_CLEANUP_TIME = 3 -- generous flat timeout; avoids racing Sound.TimeLength before the asset finishes loading

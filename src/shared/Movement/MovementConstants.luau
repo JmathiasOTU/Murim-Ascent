@@ -48,7 +48,7 @@ local MovementConstants = {
 	WallClingDoubleJumpVelocity = 85, -- small recovery hop off a WallBoost; weaker than DoubleJumpVelocity on purpose
 	WallClingDoubleJumpDuration = 0.5,
 	WallClingDoubleJumpWindow = 1, -- seconds after a WallBoost the recovery hop stays available before expiring on its own
-	WallClingDetectionRange = 4, -- studs; forward reach of the grab/still-clinging raycasts (was hardcoded at 3, felt too strict)
+	WallClingDetectionRange = 8, -- studs; forward reach of the grab/still-clinging raycasts (was hardcoded at 3, felt too strict)
 
 	-- Wall Leaping
 	WallLeapOutwardPower = 140,
@@ -76,9 +76,24 @@ local MovementConstants = {
 	LeanMaxAngleDegrees = 6,
 	LeanSpeed = 10,
 
+	-- Camera Lean (procedural camera roll on strafe / wall running)
+	CameraLeanMaxAngleDegrees = 3, -- subtle on purpose; this is a feel detail, not the rig lean's more visible tilt
+	CameraLeanSpeed = 6, -- lower than LeanSpeed on purpose for a smoother, less snappy settle
+	CameraWallRunLeanMaxAngleDegrees = 6, -- tilts away from the wall; more pronounced than the strafe lean since WallRunning is a bigger movement moment
+	SprintFovBoost = 25, -- degrees added to the camera's FOV while Sprinting, to sell the sense of speed
+	SprintFovSpeed = 4, -- smoothing rate for the FOV ramp; slower than CameraLeanSpeed for a gradual "building up speed" feel
+
 	-- Parkour Raycast Detection
 	WallSideRayDistance = 3.5,
+	WallSideCheckOffset = 1, -- studs; how far left/right of center the flanking rays sample in checkWallCling/checkStillClinging
+	WallFlatnessThreshold = 0.2, -- max |hitNormal:Dot(upVector)| for a surface to count as a vertical wall (filters out floors/ceilings)
 	ParkourTickRate = 0.033, -- ~30 scans/sec instead of 60+, FPS independent
+
+	-- Camera/VFX Feel Details
+	CameraStrafeThreshold = 0.05, -- ignores near-zero MoveDirection noise in the strafe lean instead of chasing it
+	DefaultFOV = 70, -- Roblox's stock default; only used as a fallback if CurrentCamera isn't around yet to read a real baseline from
+	GroundVFXCheckDistance = 6, -- studs; how far landing VFX raycasts down from HumanoidRootPart to find the actual floor
+	LimbTrailFadeBuffer = 0.3, -- extra seconds past a limb trail's stated duration so its own fade-out isn't cut off mid-clip
 
 	-- Physics Engine Safety
 	MaxPhysicsForce = 100000, -- finite force cap so the physics engine doesn't panic on extreme velocities
@@ -90,8 +105,9 @@ local MovementConstants = {
 	MinSpeedCheckInterval = 0.1, -- seconds; floor on the dt used for the speed check, so two movement
 	                             -- intents firing milliseconds apart (e.g. Jumping -> DoubleJumping) can't
 	                             -- produce a wildly unstable distance/dt reading from measurement noise
-	WallProximityCheckDistance = 12, -- studs; how far the server's wall/ledge raycasts reach when validating WallRunning/WallHanging/WallBoost
-	WallProximityLatencyCap = 0.3, -- seconds; ceiling on how far the proximity check extrapolates a player's position forward along their velocity to compensate for replication lag
+	WallProximityCheckDistance = 8, -- studs; how far the server's wall/ledge raycasts reach when validating WallRunning/WallHanging/WallBoost/WallLeaping
+	WallProximityLatencyCap = 2, -- seconds; ceiling on how far the proximity check extrapolates a player's position forward along their velocity to compensate for replication lag
+	RubberbandAnchorDuration = 0.1, -- seconds the HRP stays force-anchored after a rejected transition, before releasing back to normal physics
 }
 
 -- Airborne states carry their own momentum; forcing WalkSpeed here would fight the physics mid-air
