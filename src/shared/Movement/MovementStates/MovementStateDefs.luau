@@ -18,6 +18,9 @@ return {
 	WallBoost = "WallBoost",
 	WallRunning = "WallRunning",
 	WallLeaping = "WallLeaping",
+	TreeJumping = "TreeJumping", -- deliberate, aimed transit arc toward a tagged tree trunk; no chain limit
+	TreeStanding = "TreeStanding", -- resting on the branch once TreeJumping's arc finishes, facing locked (mirrors WallHanging)
+	TreeLaunching = "TreeLaunching", -- camera-aimed launch off the branch (space, while TreeStanding)
 	LedgeJumping = "LedgeJumping",
 	LightLanding = "LightLanding",
 	HeavyLanding = "HeavyLanding",

@@ -94,6 +94,7 @@ return {
 		[MovementStateDefs.AirDashing] = true, -- Add this
 		[MovementStateDefs.WallHanging] = true,
 		[MovementStateDefs.WallRunning] = true,
+		[MovementStateDefs.TreeJumping] = true,
 	},
 	[MovementStateDefs.DoubleJumping] = {
 		[MovementStateDefs.Falling] = true,
@@ -116,9 +117,25 @@ return {
 		[MovementStateDefs.AirDashing] = true, -- Add this
 		[MovementStateDefs.WallHanging] = true,
 		[MovementStateDefs.WallRunning] = true,
+		[MovementStateDefs.TreeJumping] = true,
 		[MovementStateDefs.Sliding] = false,
 		[MovementStateDefs.LightLanding] = true,
 		[MovementStateDefs.HeavyLanding] = true,
+	},
+	[MovementStateDefs.TreeJumping] = {
+		-- The arc always resolves into TreeStanding once TreeJumpUtils.computeDuration's transit
+		-- finishes — resting on the branch, mirroring WallHanging. No chain-use cap by design: this
+		-- is the out-of-combat traversal tool.
+		[MovementStateDefs.TreeStanding] = true,
+	},
+	[MovementStateDefs.TreeStanding] = {
+		[MovementStateDefs.TreeLaunching] = true, -- space: camera-aimed launch off the branch
+		[MovementStateDefs.TreeJumping] = true, -- Y again, aimed at a different tree: chains directly without launching off first
+		[MovementStateDefs.Falling] = true, -- ran out of contact/similar unexpected exit
+	},
+	[MovementStateDefs.TreeLaunching] = {
+		-- A fixed-length launch impulse, same shape as WallBoost — always ends by falling.
+		[MovementStateDefs.Falling] = true,
 	},
 	[MovementStateDefs.WallClingDoubleJump] = {
 		-- Strictly a wall-jump recovery hop, not a general extra air jump — see the

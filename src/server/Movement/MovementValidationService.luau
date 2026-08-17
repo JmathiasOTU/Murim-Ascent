@@ -6,6 +6,7 @@ local MovementConstants = require(ReplicatedStorage.Shared.Movement.MovementCons
 local MovementStateDefs = require(ReplicatedStorage.Shared.Movement.MovementStates.MovementStateDefs)
 local MovementTransitionTable = require(ReplicatedStorage.Shared.Movement.MovementStates.MovementTransitionTable)
 local MovementValidationUtils = require(ReplicatedStorage.Shared.Movement.MovementValidationUtils)
+local TreeTagUtils = require(ReplicatedStorage.Shared.Movement.TreeTagUtils)
 local RemoteRegistry = require(ReplicatedStorage.Shared.Net.RemoteRegistry)
 local MovementStateService = require(script.Parent.MovementStateService)
 
@@ -42,6 +43,32 @@ local function isNearWallOrLedge(character, player)
 	local nearbyParts = Workspace:GetPartBoundsInRadius(origin, MovementConstants.WallProximityCheckDistance, overlapParams)
 	for _, part in ipairs(nearbyParts) do
 		if part.CanCollide then
+			return true
+		end
+	end
+	return false
+end
+
+-- Helper: coarse backstop for TreeJumping, same technique as isNearWallOrLedge (latency-projected
+-- radius query) but filtered by the QinggongTree tag (via TreeTagUtils.findTaggedAncestor, since
+-- trees are commonly tagged on a wrapping Model rather than the specific leaf part a spatial query
+-- returns) instead of CanCollide. Doesn't attempt to validate the client's screen-space aim —
+-- that's a feel/intent check, not a security one; the server only cares that a legitimate tree
+-- existed somewhere nearby to bounce off of.
+local function isNearTaggedTree(character, player)
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if not hrp then return false end
+
+	local latency = math.min(player:GetNetworkPing() / 2, MovementConstants.WallProximityLatencyCap)
+	local origin = hrp.Position + (hrp.AssemblyLinearVelocity * latency)
+
+	local overlapParams = OverlapParams.new()
+	overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+	overlapParams.FilterDescendantsInstances = {character}
+
+	local nearbyParts = Workspace:GetPartBoundsInRadius(origin, MovementConstants.TreeJumpDetectionRange, overlapParams)
+	for _, part in ipairs(nearbyParts) do
+		if TreeTagUtils.findTaggedAncestor(part, MovementConstants.TreeJumpTag) then
 			return true
 		end
 	end
@@ -198,6 +225,20 @@ function MovementValidationService.start()
 
 				if not isNearWallOrLedge(character, player) then
 					rubberbandReject(character, player, string.format("triggered parkour %s but no wall/ledge was found nearby!", targetState))
+					sendCorrection(player, profile, MovementStateChanged)
+					return
+				end
+			end
+
+			-- TreeStanding/TreeLaunching are only ever reachable via a currentState that already
+			-- passed this same check (TreeJumping's arc, or TreeStanding itself) — defense-in-depth,
+			-- same rationale as WallBoost/WallLeaping re-checking a wall above, not closing an open hole.
+			if targetState == MovementStateDefs.TreeJumping or
+			   targetState == MovementStateDefs.TreeStanding or
+			   targetState == MovementStateDefs.TreeLaunching then
+
+				if not isNearTaggedTree(character, player) then
+					rubberbandReject(character, player, string.format("triggered %s but no tagged tree was found nearby!", targetState))
 					sendCorrection(player, profile, MovementStateChanged)
 					return
 				end

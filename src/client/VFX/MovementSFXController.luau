@@ -27,6 +27,7 @@ local STATE_SFX = {
 	[MovementStateDefs.HeavyLanding] = { name = "Heavy Landing", delay = 0, offset = 0 },
 	[MovementStateDefs.Sliding] = { name = "Slide", delay = 0, offset = 0 },
 	[MovementStateDefs.LedgeJumping] = { name = "LedgeJump", delay = 0, offset = 0 },
+	[MovementStateDefs.TreeJumping] = { name = "Tree Jump", delay = 0, offset = 0 },
 }
 
 -- Mirrors VFXPlaybackController's SPRINT_VFX_CONTINUATION_STATES: states the FSM can pass
@@ -41,6 +42,7 @@ local SPRINT_SFX_CONTINUATION_STATES = {
 	[MovementStateDefs.WallBoost] = true,
 	[MovementStateDefs.WallRunning] = true,
 	[MovementStateDefs.WallLeaping] = true,
+	[MovementStateDefs.TreeJumping] = true,
 	[MovementStateDefs.LedgeJumping] = true,
 	[MovementStateDefs.LightLanding] = true,
 	[MovementStateDefs.HeavyLanding] = true,

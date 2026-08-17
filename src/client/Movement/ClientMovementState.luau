@@ -13,6 +13,7 @@ local MovementConstants = require(ReplicatedStorage.Shared.Movement.MovementCons
 local MovementValidationUtils = require(ReplicatedStorage.Shared.Movement.MovementValidationUtils)
 local RemoteRegistry = require(ReplicatedStorage.Shared.Net.RemoteRegistry)
 local ParkourRaycastUtils = require(script.Parent.ParkourRaycastUtils)
+local TreeJumpUtils = require(script.Parent.TreeJumpUtils)
 
 local ClientMovementState = {}
 ClientMovementState.FSMReady = LemonSignal.new()
@@ -181,6 +182,44 @@ function ClientMovementState.start()
 			end
 		end
 
+		-- Attempts a tree-jump transit toward whatever TreeJumpUtils finds in view. Shared by the Y
+		-- keybind's two contexts — starting fresh from Jumping/Falling/WallLeaping, and chaining
+		-- directly to a different tree while already TreeStanding — so both stay in sync on exactly
+		-- how the duration is computed instead of drifting if only one call site got updated later.
+		local function attemptTreeJump()
+			local camera = workspace.CurrentCamera
+			local treeTarget = camera and TreeJumpUtils.findTarget(camera, hrp, character)
+			if not treeTarget then return false end
+
+			local success = fsm:transition(MovementStateDefs.TreeJumping)
+			if not success then return false end
+
+			hasDoubleJumped = false
+			MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.TreeJumping })
+
+			-- Same distance -> duration formula MovementPhysicsController's arc uses (surface
+			-- position plus the HipHeight/HRP-height offset down to the feet), so the FSM's move
+			-- into TreeStanding lines up with exactly when the transit actually finishes instead of
+			-- drifting off a mismatched distance and cutting the arc short or leaving it hanging.
+			local targetPosition = TreeJumpUtils.getLandingSurfacePosition(treeTarget)
+			if targetPosition then
+				targetPosition += Vector3.new(0, humanoid.HipHeight + (hrp.Size.Y / 2), 0)
+			end
+			local distance = targetPosition and (targetPosition - hrp.Position).Magnitude or 0
+			local duration = TreeJumpUtils.computeDuration(distance)
+
+			scheduleTask("TreeJump", duration, function()
+				if fsm.CurrentState == MovementStateDefs.TreeJumping then
+					local standSuccess = fsm:transition(MovementStateDefs.TreeStanding)
+					if standSuccess then
+						MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.TreeStanding })
+					end
+				end
+			end)
+
+			return true
+		end
+
 		local parkourUpdateAccumulator = 0
 		local PARKOUR_TICK_RATE = 0.033 -- Scans ~30 times a second instead of 60+ (FPS independent)
 
@@ -253,10 +292,20 @@ function ClientMovementState.start()
 		end)
 
 		humanoid.StateChanged:Connect(function(_oldState, newState)
-			if fsm.CurrentState == MovementStateDefs.WallLeaping or fsm.CurrentState == MovementStateDefs.WallBoost then
+			if fsm.CurrentState == MovementStateDefs.WallLeaping or fsm.CurrentState == MovementStateDefs.WallBoost or fsm.CurrentState == MovementStateDefs.TreeJumping or fsm.CurrentState == MovementStateDefs.TreeLaunching then
 				if newState == Enum.HumanoidStateType.Landed then
 					evaluateState(true)
 				end
+				return
+			end
+
+			if fsm.CurrentState == MovementStateDefs.TreeStanding then
+				-- Standing IS the resting state, not an interruption of one — if the branch itself
+				-- has real collision, Landed can fire here just from the humanoid recognizing it as
+				-- floor, and that's expected. Treating it like WallLeaping/WallBoost's early-landing
+				-- case above would immediately kick the player back to Idle/Walking the moment they
+				-- touch down, defeating the entire point of resting on the branch until they choose
+				-- to leave (Y to chain, space to launch off).
 				return
 			end
 
@@ -353,6 +402,24 @@ function ClientMovementState.start()
 							end)
 							return Enum.ContextActionResult.Sink
 						end
+					end
+				end
+
+				if state == MovementStateDefs.TreeStanding then
+					local success = fsm:transition(MovementStateDefs.TreeLaunching)
+					if success then
+						MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.TreeLaunching })
+
+						scheduleTask("TreeLaunch", MovementConstants.TreeLaunchDuration, function()
+							if fsm.CurrentState == MovementStateDefs.TreeLaunching then
+								local fallSuccess = fsm:transition(MovementStateDefs.Falling)
+								if fallSuccess then
+									fallStartTime = os.clock()
+									MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Falling })
+								end
+							end
+						end)
+						return Enum.ContextActionResult.Sink
 					end
 				end
 
@@ -511,6 +578,22 @@ function ClientMovementState.start()
 			return Enum.ContextActionResult.Pass
 		end, false, Enum.KeyCode.Q)
 
+		-- TREE JUMP — dedicated key (not sharing space's already-overloaded priority chain), usable
+		-- both to start a jump (from Jumping/Falling/WallLeaping) and to chain straight to a
+		-- different tree while already resting on one (TreeStanding), via the same attemptTreeJump
+		-- helper either way. No chain-use cap by design: this is the out-of-combat traversal tool.
+		ContextActionService:BindActionAtPriority("TreeJump", function(_actionName, inputState, _inputObject)
+			if inputState == Enum.UserInputState.Begin then
+				local state = fsm.CurrentState
+				if state == MovementStateDefs.Jumping or state == MovementStateDefs.Falling or state == MovementStateDefs.WallLeaping or state == MovementStateDefs.TreeStanding then
+					if attemptTreeJump() then
+						return Enum.ContextActionResult.Sink
+					end
+				end
+			end
+			return Enum.ContextActionResult.Pass
+		end, false, Enum.ContextActionPriority.High.Value, Enum.KeyCode.Y)
+
 		-- Died covers the normal case; AncestryChanged is the fallback for any character removal
 		-- that doesn't go through Humanoid death (resets, hub teleports, etc.)
 		local cleaned = false
@@ -524,6 +607,7 @@ function ClientMovementState.start()
 			ContextActionService:UnbindAction("ToggleRun")
 			ContextActionService:UnbindAction("TriggerDash")
 			ContextActionService:UnbindAction("ParkourSpacebar")
+			ContextActionService:UnbindAction("TreeJump")
 
 			-- Clean up all managed threads safely
 			for _, t in pairs(activeTasks) do

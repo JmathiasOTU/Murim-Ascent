@@ -6,6 +6,7 @@ local ClientMovementState = require(script.Parent.ClientMovementState)
 local MovementConstants = require(ReplicatedStorage.Shared.Movement.MovementConstants)
 local MovementStateDefs = require(ReplicatedStorage.Shared.Movement.MovementStates.MovementStateDefs)
 local VelocityConstraintUtils = require(script.Parent.VelocityConstraintUtils)
+local TreeJumpUtils = require(script.Parent.TreeJumpUtils)
 
 local MovementPhysicsController = {}
 local started = false
@@ -235,6 +236,138 @@ function MovementPhysicsController.start()
 			hrp.AssemblyLinearVelocity = launchVel
 		end
 
+		-- 3.6 TREE JUMPING (Naruto-style bounce off a tagged tree trunk)
+		local function handleTreeJumping()
+			-- Re-finds the target independently rather than receiving it from
+			-- ClientMovementState's entry check — same "each module re-derives what it needs from
+			-- world state" pattern handleWallLeaping/handleLedgeJumping already use, so this module
+			-- never depends on another controller's internal state.
+			local camera = workspace.CurrentCamera
+			local targetInstance = camera and TreeJumpUtils.findTarget(camera, hrp, character)
+			local targetPosition = targetInstance and TreeJumpUtils.getLandingSurfacePosition(targetInstance)
+
+			if not targetPosition then
+				-- Target vanished in the instant between the entry check and this handler running
+				-- (same-frame edge case) — a plain forward hop so the input isn't silently eaten,
+				-- same shape as a double jump
+				cleanupDash()
+				humanoid.AutoRotate = true
+				local launchVel = (hrp.CFrame.LookVector * MovementConstants.TreeJumpFallbackForwardPower) + Vector3.new(0, MovementConstants.TreeJumpFallbackUpwardPower, 0)
+				hrp.AssemblyLinearVelocity = launchVel
+				return
+			end
+
+			-- The arc drives the HumanoidRootPart (torso height) to targetPosition, but
+			-- getLandingSurfacePosition already resolved to the branch's actual top surface — where
+			-- the FEET should land, not the torso — same category of gap HardLandVfx had before it
+			-- started raycasting to the real floor. R6-only per the project's rig policy, so
+			-- HipHeight + half the HRP's own height is the exact, reliable vertical distance from the
+			-- HRP's center down to the feet.
+			targetPosition += Vector3.new(0, humanoid.HipHeight + (hrp.Size.Y / 2), 0)
+
+			-- A driven parabolic arc from launch position to the exact target position, not a
+			-- one-shot velocity impulse — a fixed launch power overshoots close trees and
+			-- undershoots far ones, since it has no notion of how far away the target actually is.
+			-- Steering toward a precomputed curve (same continuous VectorVelocity pattern
+			-- handleWallRunning/handleHeavyLanding already use) guarantees landing exactly on the
+			-- tree by construction: the curve's own endpoint IS the target.
+			cleanupDash()
+			humanoid.AutoRotate = true
+
+			-- Approaching a branch from underneath (or through any other geometry en route) can
+			-- otherwise collide with a solid underside and get stuck there — the constraint below
+			-- is a real physics force, not a teleport, so it still respects collision. Ghosting the
+			-- CHARACTER (not the tree) for the transit is what actually fixes this: the tagged
+			-- landing part is only the invisible marker sized to the branch, but the branch's real
+			-- visual mesh is separate, untagged geometry we have no reliable way to identify — so
+			-- toggling collision off on the tree's own parts left that real mesh solid and still
+			-- blocking the ascent. Roblox only collides a pair of parts if BOTH sides are
+			-- CanCollide, so disabling every part on our own side is sufficient to pass through
+			-- everything for the transit; collision is restored the instant it ends, so the
+			-- character resolves normally against whatever it's actually standing/landing on.
+			local characterParts = {}
+			for _, descendant in ipairs(character:GetDescendants()) do
+				if descendant:IsA("BasePart") then
+					table.insert(characterParts, descendant)
+				end
+			end
+
+			local originalCanCollide = {}
+			for _, part in ipairs(characterParts) do
+				originalCanCollide[part] = part.CanCollide
+				part.CanCollide = false
+			end
+
+			local function restoreCharacterCollision()
+				for part, wasCollidable in pairs(originalCanCollide) do
+					if part and part.Parent then
+						part.CanCollide = wasCollidable
+					end
+				end
+			end
+
+			local generation = VelocityConstraintUtils.activate(constraintPool, FULL_LOCK_FORCE)
+
+			local startPosition = hrp.Position
+			local distance = (targetPosition - startPosition).Magnitude
+			local duration = TreeJumpUtils.computeDuration(distance)
+			local startTime = os.clock()
+
+			steerConnection = RunService.Heartbeat:Connect(function()
+				if not constraintPool.velocity.Enabled then return end
+
+				local alpha = math.clamp((os.clock() - startTime) / duration, 0, 1)
+
+				-- Analytical derivative of lerp(start, target, alpha) + arc(alpha) with respect to
+				-- time, not a finite-difference (next-position minus current)/dt — that form is
+				-- frame-rate dependent and spikes badly on a slow frame. This is smooth regardless
+				-- of dt and, integrated over the full duration, arrives exactly at targetPosition.
+				local linearVelocity = (targetPosition - startPosition) / duration
+				local arcVelocity = (4 * MovementConstants.TreeJumpArcHeight * (1 - 2 * alpha)) / duration
+
+				constraintPool.velocity.VectorVelocity = linearVelocity + Vector3.new(0, arcVelocity, 0)
+			end)
+
+			task.delay(duration, function()
+				VelocityConstraintUtils.deactivateIfCurrent(constraintPool, generation)
+				restoreCharacterCollision()
+			end)
+		end
+
+		-- 3.65 TREE STANDING (resting on the branch once TreeJumping's arc finishes — mirrors
+		-- handleWallHanging's constraint setup, but holds a fixed position instead of sliding, since
+		-- this is meant to feel like standing on a stable perch, not clinging to gravity's pull down
+		-- a sheer wall)
+		local function handleTreeStanding()
+			cleanupDash()
+			-- Facing locked while standing, same as WallHanging — the launch-off direction below is
+			-- driven entirely by where the camera is looking, not by character facing, so nothing
+			-- needs AutoRotate to keep turning the rig here.
+			humanoid.AutoRotate = false
+			VelocityConstraintUtils.activate(constraintPool, FULL_LOCK_FORCE)
+			constraintPool.velocity.VectorVelocity = Vector3.zero
+		end
+
+		-- 3.66 TREE LAUNCHING (camera-aimed launch off the branch, space while TreeStanding)
+		local function handleTreeLaunching()
+			-- Same shape as handleAirDashing's camera-pitch-driven aim, just off a branch instead of
+			-- mid-air — letting you look up for more height or down to dive off, instead of always
+			-- launching in whatever direction the (locked-while-standing) character happens to face.
+			cleanupDash()
+			humanoid.AutoRotate = true
+
+			local camera = workspace.CurrentCamera
+			local camLook = camera and camera.CFrame.LookVector or hrp.CFrame.LookVector
+
+			local camPitch = camLook.Y
+			local flatLook = camLook * Vector3.new(1, 0, 1)
+			local flatForward = if flatLook.Magnitude > 0.001 then flatLook.Unit else hrp.CFrame.LookVector
+
+			local forwardVel = flatForward * MovementConstants.TreeLaunchSpeed
+			local upVel = Vector3.new(0, camPitch * MovementConstants.TreeLaunchSpeed * MovementConstants.TreeLaunchVerticalMult, 0)
+			hrp.AssemblyLinearVelocity = forwardVel + upVel
+		end
+
 		-- 3.75 WALL CLING DOUBLE JUMP (small recovery hop off a WallBoost, not a general air jump)
 		local function handleWallClingDoubleJump()
 			cleanupDash()
@@ -330,6 +463,9 @@ function MovementPhysicsController.start()
 			[MovementStateDefs.WallHanging] = handleWallHanging,
 			[MovementStateDefs.WallRunning] = handleWallRunning,
 			[MovementStateDefs.WallLeaping] = handleWallLeaping,
+			[MovementStateDefs.TreeJumping] = handleTreeJumping,
+			[MovementStateDefs.TreeStanding] = handleTreeStanding,
+			[MovementStateDefs.TreeLaunching] = handleTreeLaunching,
 			[MovementStateDefs.AirDashing] = handleAirDashing,
 			[MovementStateDefs.LedgeJumping] = handleLedgeJumping,
 			[MovementStateDefs.DoubleJumping] = handleDoubleJumping,

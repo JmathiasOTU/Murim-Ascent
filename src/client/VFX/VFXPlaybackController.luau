@@ -45,6 +45,7 @@ local SPRINT_VFX_CONTINUATION_STATES = {
 	[MovementStateDefs.WallBoost] = true,
 	[MovementStateDefs.WallRunning] = true,
 	[MovementStateDefs.WallLeaping] = true,
+	[MovementStateDefs.TreeJumping] = true,
 	[MovementStateDefs.LedgeJumping] = true,
 	[MovementStateDefs.LightLanding] = true,
 	[MovementStateDefs.HeavyLanding] = true,
@@ -66,7 +67,7 @@ local function playRandomSound(soundTable, parent: Instance)
 	sound:Play()
 end
 
-local ONE_SHOT_VFX_CLEANUP_TIME = 2 -- seconds; gives particles time to fade before the clone is destroyed
+local ONE_SHOT_VFX_CLEANUP_TIME = 4 -- seconds; gives particles time to fade before the clone is destroyed
 
 -- Clones a named one-shot prefab from VFX.Movement at targetCFrame and bursts its emitters once
 local function playBurstVFX(vfxName: string, targetCFrame: CFrame)
@@ -79,6 +80,12 @@ local function playBurstVFX(vfxName: string, targetCFrame: CFrame)
 	local vfxClone = vfxTemplate:Clone()
 	vfxClone.CFrame = targetCFrame
 	vfxClone.Parent = workspace
+
+	-- A one-shot burst is meant to sit exactly at targetCFrame for its brief lifetime, not fall
+	-- under gravity — anchor it here so that holds regardless of whether a given VFX asset
+	-- remembered to set Anchored itself in Studio.
+	vfxClone.Anchored = true
+	vfxClone.CanCollide = false
 
 	for _, emitter in ipairs(vfxClone:GetDescendants()) do
 		if emitter:IsA("ParticleEmitter") then
@@ -200,6 +207,31 @@ local function setupCharacterVFX(fsm, character)
 	local hrp = character:WaitForChild("HumanoidRootPart")
 
 	local activeSprintVFXParts = {}
+	local hiddenTransparency = nil -- non-nil only while the real character is hidden mid tree-jump
+
+	-- Hides the real character for the flight so it reads as "gone" during the transit. Stores
+	-- each part's original Transparency (not just a blind 0) so parts that start partially
+	-- transparent for other reasons restore correctly.
+	local function hideCharacterForTreeJump()
+		if hiddenTransparency then return end -- already hidden (shouldn't happen, but don't clobber the stored originals)
+		hiddenTransparency = {}
+		for _, descendant in ipairs(character:GetDescendants()) do
+			if descendant:IsA("BasePart") or descendant:IsA("Decal") then
+				hiddenTransparency[descendant] = descendant.Transparency
+				descendant.Transparency = 1
+			end
+		end
+	end
+
+	local function showCharacterAfterTreeJump()
+		if not hiddenTransparency then return end
+		for descendant, originalTransparency in pairs(hiddenTransparency) do
+			if descendant and descendant.Parent then
+				descendant.Transparency = originalTransparency
+			end
+		end
+		hiddenTransparency = nil
+	end
 
 	local function toggleSprintVFX(isEnabled)
 		if isEnabled then
@@ -236,7 +268,7 @@ local function setupCharacterVFX(fsm, character)
 		end
 	end
 
-	local fsmConnection = fsm.StateChanged:Connect(function(_oldState, newState)
+	local fsmConnection = fsm.StateChanged:Connect(function(oldState, newState)
 		if newState == MovementStateDefs.LedgeJumping then
 			playBurstVFX("LedgeJumpVFX", hrp.CFrame)
 		elseif newState == MovementStateDefs.WallLeaping then
@@ -250,6 +282,16 @@ local function setupCharacterVFX(fsm, character)
 			playLimbTrail("DashTrailVfx", character, MovementConstants.DashDuration)
 		elseif newState == MovementStateDefs.AirDashing then
 			playLimbTrail("DashTrailVfx", character, MovementConstants.AirDashDuration)
+		elseif newState == MovementStateDefs.TreeJumping then
+			playBurstVFX("TreeJumpVfx", hrp.CFrame)
+			hideCharacterForTreeJump()
+		end
+
+		-- TreeJumping is the only state that hides the character, so leaving it for ANY other
+		-- state (arrived at TreeStanding, or interrupted into Falling/a correction snap) is
+		-- exactly "landed at the destination" — bring it back.
+		if oldState == MovementStateDefs.TreeJumping and newState ~= MovementStateDefs.TreeJumping then
+			showCharacterAfterTreeJump()
 		end
 
 		-- SPRINTING: Toggle the continuous trail on/off. Passing through a continuation state

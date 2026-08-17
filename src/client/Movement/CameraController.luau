@@ -13,12 +13,18 @@ local MAX_LEAN_ANGLE = math.rad(MovementConstants.CameraLeanMaxAngleDegrees)
 local MAX_WALL_RUN_LEAN_ANGLE = math.rad(MovementConstants.CameraWallRunLeanMaxAngleDegrees)
 local LEAN_SPEED = MovementConstants.CameraLeanSpeed
 
+local LANDING_DIP_DISTANCE = MovementConstants.CameraLandingDipDistance
+local LANDING_DIP_DISTANCE_HEAVY = MovementConstants.CameraLandingDipDistanceHeavy
+local JUMP_DIP_DISTANCE = MovementConstants.CameraJumpDipDistance
+
 local baseFOV = (workspace.CurrentCamera and workspace.CurrentCamera.FieldOfView) or MovementConstants.DefaultFOV
 
 -- Mirrors VFXPlaybackController's SPRINT_VFX_CONTINUATION_STATES / MovementSFXController's
 -- SPRINT_SFX_CONTINUATION_STATES: states the FSM can pass through mid-sprint (jump, wall run,
--- landing, ...) that should NOT cut the FOV kick. Sprinting itself is included here too so a
--- single membership check covers "currently sprinting or still within a sprint's continuation."
+-- landing, ...) that should NOT cut the FOV kick if a sprint is already active. This is checked
+-- against state TRANSITIONS (see isSprintFovActive below), never against the current state
+-- directly — Jumping/LightLanding/HeavyLanding are continuation states, not triggers, so a plain
+-- jump from a standstill must NOT turn the FOV kick on by itself.
 local SPRINT_FOV_ACTIVE_STATES = {
 	[MovementStateDefs.Sprinting] = true,
 	[MovementStateDefs.Jumping] = true,
@@ -30,6 +36,7 @@ local SPRINT_FOV_ACTIVE_STATES = {
 	[MovementStateDefs.WallBoost] = true,
 	[MovementStateDefs.WallRunning] = true,
 	[MovementStateDefs.WallLeaping] = true,
+	[MovementStateDefs.TreeJumping] = true,
 	[MovementStateDefs.LedgeJumping] = true,
 	[MovementStateDefs.LightLanding] = true,
 	[MovementStateDefs.HeavyLanding] = true,
@@ -39,6 +46,9 @@ local SPRINT_FOV_ACTIVE_STATES = {
 function CameraController.start()
 	local currentRoll = 0
 	local currentFovOffset = 0
+	local currentDipOffset = 0
+	local targetDipOffset = 0
+	local isSprintFovActive = false
 
 	ClientMovementState.FSMReady:Connect(function(fsm, character)
 		local humanoid = character:WaitForChild("Humanoid")
@@ -54,6 +64,45 @@ function CameraController.start()
 		-- raycasting. The smoothing below still runs every frame; only the raycast is throttled.
 		local wallSideCheckAccumulator = 0
 		local cachedWallRunTargetRoll = 0
+
+		-- Sinks the camera down on impact (landing OR the initial jump launch, like knees
+		-- absorbing/generating the push), then lets it smoothly recover — mirrors the strafe
+		-- lean's "target + exponential chase" shape, but the target itself is time-limited: it
+		-- snaps to the dip distance on impact, holds briefly (CameraLandingDipHoldTime) so the
+		-- hit actually reads, then flips back to 0 so the same chase logic eases it back to
+		-- neutral. Shared by landing and jumping since both are "camera dips, then recovers" —
+		-- only the distance differs per trigger.
+		local dipHoldTask
+		local function triggerCameraDip(dipDistance)
+			targetDipOffset = dipDistance
+
+			if dipHoldTask then
+				task.cancel(dipHoldTask)
+			end
+			dipHoldTask = task.delay(MovementConstants.CameraLandingDipHoldTime, function()
+				dipHoldTask = nil
+				targetDipOffset = 0
+			end)
+		end
+
+		local cameraStateConnection = fsm.StateChanged:Connect(function(_oldState, newState)
+			if newState == MovementStateDefs.HeavyLanding then
+				triggerCameraDip(LANDING_DIP_DISTANCE_HEAVY)
+			elseif newState == MovementStateDefs.LightLanding then
+				triggerCameraDip(LANDING_DIP_DISTANCE)
+			elseif newState == MovementStateDefs.Jumping then
+				triggerCameraDip(JUMP_DIP_DISTANCE)
+			end
+
+			-- Only an actual Sprinting entry turns the FOV kick on; continuation states just let
+			-- it ride through instead of getting cut. Any other state (including a jump/landing
+			-- reached without ever sprinting) turns it back off.
+			if newState == MovementStateDefs.Sprinting then
+				isSprintFovActive = true
+			elseif not SPRINT_FOV_ACTIVE_STATES[newState] then
+				isSprintFovActive = false
+			end
+		end)
 
 		-- Bound one priority step after Roblox's own camera update (Enum.RenderPriority.Camera)
 		-- so this rolls on TOP of the default camera CFrame every frame instead of being
@@ -108,12 +157,22 @@ function CameraController.start()
 
 			camera.CFrame *= CFrame.Angles(0, 0, currentRoll)
 
+			-- Impact dip (landing or jump launch): faster chase down into the dip (attack) than
+			-- back up to neutral (recovery), so the impact reads instantly but the recovery still
+			-- feels smooth. Applied as a local-space vertical offset (camera sinks in place), not
+			-- a rotation.
+			local dipSpeed = targetDipOffset ~= 0 and MovementConstants.CameraLandingDipAttackSpeed or MovementConstants.CameraLandingDipRecoverySpeed
+			local dipAlpha = 1 - math.exp(-dipSpeed * dt)
+			currentDipOffset += (targetDipOffset - currentDipOffset) * dipAlpha
+
+			camera.CFrame *= CFrame.new(0, -currentDipOffset, 0)
+
 			-- FOV kick: widens smoothly while Sprinting to sell the sense of speed. Rides through
 			-- continuation states (jump, wall run, landing, ...) the same way the sprint wind/trail
 			-- VFX does, so a jump mid-sprint doesn't snap it back in — only actually stopping
 			-- (Idle/Walking/Running without requalifying, Crouching, an explicit Dash/Slide, ...)
 			-- does.
-			local targetFovOffset = SPRINT_FOV_ACTIVE_STATES[fsm.CurrentState] and MovementConstants.SprintFovBoost or 0
+			local targetFovOffset = isSprintFovActive and MovementConstants.SprintFovBoost or 0
 			local fovAlpha = 1 - math.exp(-MovementConstants.SprintFovSpeed * dt)
 			currentFovOffset += (targetFovOffset - currentFovOffset) * fovAlpha
 			camera.FieldOfView = baseFOV + currentFovOffset
@@ -125,8 +184,16 @@ function CameraController.start()
 			cleaned = true
 
 			RunService:UnbindFromRenderStep(BIND_NAME)
+			cameraStateConnection:Disconnect()
+			if dipHoldTask then
+				task.cancel(dipHoldTask)
+				dipHoldTask = nil
+			end
 			currentRoll = 0
 			currentFovOffset = 0
+			isSprintFovActive = false
+			currentDipOffset = 0
+			targetDipOffset = 0
 			local camera = workspace.CurrentCamera
 			if camera then
 				camera.FieldOfView = baseFOV
