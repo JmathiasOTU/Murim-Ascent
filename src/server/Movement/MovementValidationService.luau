@@ -230,13 +230,18 @@ function MovementValidationService.start()
 				end
 			end
 
-			-- TreeStanding/TreeLaunching are only ever reachable via a currentState that already
-			-- passed this same check (TreeJumping's arc, or TreeStanding itself) — defense-in-depth,
-			-- same rationale as WallBoost/WallLeaping re-checking a wall above, not closing an open hole.
-			if targetState == MovementStateDefs.TreeJumping or
-			   targetState == MovementStateDefs.TreeStanding or
-			   targetState == MovementStateDefs.TreeLaunching then
-
+			-- Only TreeJumping itself gets checked. TreeStanding/TreeLaunching are only ever
+			-- reachable via a currentState that already passed this same check moments earlier
+			-- (TreeJumping's arc, or TreeStanding itself) — re-checking them was meant as pure
+			-- defense-in-depth, but it actively caused false rejections: right after the fast arc
+			-- lands, the server's replicated position/velocity for the character is briefly stale
+			-- from network lag, and isNearTaggedTree's latency-projected origin can overshoot badly
+			-- at exactly that instant, occasionally failing the check and rejecting TreeStanding —
+			-- which then cascades into TreeLaunching failing the transition-table check too, since
+			-- the server's tracked state never actually became TreeStanding. Not closing any real
+			-- hole by dropping this: nothing reachable from TreeStanding/TreeLaunching lets a
+			-- modified client teleport or gain speed on its own.
+			if targetState == MovementStateDefs.TreeJumping then
 				if not isNearTaggedTree(character, player) then
 					rubberbandReject(character, player, string.format("triggered %s but no tagged tree was found nearby!", targetState))
 					sendCorrection(player, profile, MovementStateChanged)

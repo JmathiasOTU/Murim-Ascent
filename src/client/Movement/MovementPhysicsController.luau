@@ -329,7 +329,28 @@ function MovementPhysicsController.start()
 			end)
 
 			task.delay(duration, function()
-				VelocityConstraintUtils.deactivateIfCurrent(constraintPool, generation)
+				-- Hold exactly at the landed position instead of releasing to free physics.
+				-- Deactivating here left a real gap — until ClientMovementState's own
+				-- independently-scheduled timer fires the FSM transition into TreeStanding — where
+				-- gravity plus the arc's own still-substantial trailing velocity could carry the
+				-- character right off the edge of a small branch before anything caught it. Zeroing
+				-- velocity in place (same generation, same lock) closes that gap completely;
+				-- handleTreeStanding re-applies the same lock a moment later, which is a harmless
+				-- no-op on top of this. Generation-gated so a stale timer from an interrupted jump
+				-- can't stomp on whatever a newer state already did with the constraint.
+				--
+				-- The steering connection above must also be torn down here, not just left to its
+				-- own "if not Enabled" guard — the constraint stays Enabled (that's the whole point
+				-- of holding instead of releasing), so without this the connection keeps running
+				-- every Heartbeat and immediately overwrites the zero we just set with its own
+				-- still-nonzero end-of-arc velocity on the very next frame.
+				if constraintPool.generation == generation then
+					if steerConnection then
+						steerConnection:Disconnect()
+						steerConnection = nil
+					end
+					constraintPool.velocity.VectorVelocity = Vector3.zero
+				end
 				restoreCharacterCollision()
 			end)
 		end
@@ -350,22 +371,57 @@ function MovementPhysicsController.start()
 
 		-- 3.66 TREE LAUNCHING (camera-aimed launch off the branch, space while TreeStanding)
 		local function handleTreeLaunching()
-			-- Same shape as handleAirDashing's camera-pitch-driven aim, just off a branch instead of
-			-- mid-air — letting you look up for more height or down to dive off, instead of always
-			-- launching in whatever direction the (locked-while-standing) character happens to face.
+			-- Unlike handleAirDashing's pure camera-pitch-driven aim (fine there since it's a flat
+			-- mid-air reposition), this is the actual payoff move off the branch — it needs real
+			-- height even when looking dead ahead. TreeLaunchBaseUpward guarantees that; camera
+			-- pitch only adds/subtracts TreeLaunchVerticalSpeed on top of it (decoupled from the
+			-- forward speed entirely), so looking up gives a noticeably higher arc without sending
+			-- you into orbit, and looking down still lets you dive off without a pure-pitch launch's
+			-- all-or-nothing range.
 			cleanupDash()
 			humanoid.AutoRotate = true
 
 			local camera = workspace.CurrentCamera
 			local camLook = camera and camera.CFrame.LookVector or hrp.CFrame.LookVector
 
-			local camPitch = camLook.Y
+			-- Clamped short of true vertical: aiming near straight up/down runs into the camera's
+			-- own gimbal-style flip right at the pole (LookVector.Y briefly reads on the wrong side
+			-- once the camera crosses it), which was intermittently launching the Y axis inverted.
+			-- Never reading a pitch that close to the pole sidesteps the instability entirely.
+			local camPitch = math.clamp(camLook.Y, -0.9, 0.9)
 			local flatLook = camLook * Vector3.new(1, 0, 1)
 			local flatForward = if flatLook.Magnitude > 0.001 then flatLook.Unit else hrp.CFrame.LookVector
 
 			local forwardVel = flatForward * MovementConstants.TreeLaunchSpeed
-			local upVel = Vector3.new(0, camPitch * MovementConstants.TreeLaunchSpeed * MovementConstants.TreeLaunchVerticalMult, 0)
+			local upSpeed = MovementConstants.TreeLaunchBaseUpward + (camPitch * MovementConstants.TreeLaunchVerticalSpeed)
+			local upVel = Vector3.new(0, upSpeed, 0)
 			hrp.AssemblyLinearVelocity = forwardVel + upVel
+
+			-- Launching off a branch can clip on the branch/trunk you're launching FROM — same
+			-- "untagged real mesh is still solid" problem TreeJumping's arc had. Unlike that arc
+			-- (fully scripted, safe to ghost the whole transit), this is a normal physics-driven
+			-- jump that needs collision back quickly so gravity can actually land it on something
+			-- — so this only ghosts briefly right at launch, not the whole TreeLaunchDuration.
+			local characterParts = {}
+			for _, descendant in ipairs(character:GetDescendants()) do
+				if descendant:IsA("BasePart") then
+					table.insert(characterParts, descendant)
+				end
+			end
+
+			local originalCanCollide = {}
+			for _, part in ipairs(characterParts) do
+				originalCanCollide[part] = part.CanCollide
+				part.CanCollide = false
+			end
+
+			task.delay(MovementConstants.TreeLaunchGhostDuration, function()
+				for part, wasCollidable in pairs(originalCanCollide) do
+					if part and part.Parent then
+						part.CanCollide = wasCollidable
+					end
+				end
+			end)
 		end
 
 		-- 3.75 WALL CLING DOUBLE JUMP (small recovery hop off a WallBoost, not a general air jump)

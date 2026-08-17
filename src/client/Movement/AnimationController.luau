@@ -28,6 +28,9 @@ local ANIMATION_IDS = {
 	[MovementStateDefs.LedgeJumping] = "rbxassetid://137786735677269",
 	[MovementStateDefs.LightLanding] = "rbxassetid://133945243946271",
 	[MovementStateDefs.HeavyLanding] = "rbxassetid://105831901844953",
+	[MovementStateDefs.TreeStanding] = "rbxassetid://77063033039332",
+	[MovementStateDefs.TreeJumping] = "rbxassetid://107506759721244", -- placeholder; borrowed AirDashing's ID until a dedicated Tree Jump launch animation is ready
+	[MovementStateDefs.TreeLaunching] = "rbxassetid://91226696181691", -- placeholder; borrowed WallBoost's ID until a dedicated Tree Launch animation is ready
 
 	WallLatch = "rbxassetid://115846143777391",
 	WallRunLeft = "rbxassetid://81326452444822",
@@ -103,14 +106,14 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 		local track = animator:LoadAnimation(anim)
 
 		-- Only loop tracks that aren't jumps, boosts, impacts, or air dashes!
-		if stateName == MovementStateDefs.Jumping or stateName == "DoubleJump1" or stateName == "DoubleJump2" or stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.AirDashing or stateName == MovementStateDefs.WallBoost or stateName == MovementStateDefs.WallClingDoubleJump or stateName == "WallLatch" or stateName == "WallLeapLeft" or stateName == "WallLeapRight" or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding then
+		if stateName == MovementStateDefs.Jumping or stateName == "DoubleJump1" or stateName == "DoubleJump2" or stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.AirDashing or stateName == MovementStateDefs.WallBoost or stateName == MovementStateDefs.WallClingDoubleJump or stateName == "WallLatch" or stateName == "WallLeapLeft" or stateName == "WallLeapRight" or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding or stateName == MovementStateDefs.TreeJumping or stateName == MovementStateDefs.TreeLaunching then
 			track.Looped = false
 		else
 			track.Looped = true
 		end
 
 		-- Force Priorities to avoid Roblox default script bleeding
-		if stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding or stateName == MovementStateDefs.AirDashing or stateName == MovementStateDefs.WallClingDoubleJump then
+		if stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding or stateName == MovementStateDefs.AirDashing or stateName == MovementStateDefs.WallClingDoubleJump or stateName == MovementStateDefs.TreeJumping or stateName == MovementStateDefs.TreeLaunching then
 			track.Priority = Enum.AnimationPriority.Action
 		else
 			-- Forces standard movement (Walk/Run/Idle) to dominate Roblox defaults

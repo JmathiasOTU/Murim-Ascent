@@ -18,13 +18,30 @@ function TreeJumpUtils.getWorldPosition(instance: Instance): Vector3?
 	return nil
 end
 
+local LANDING_POINT_NAME = "LandingPoint"
+
 -- The actual landing point: the top surface of the tagged part/model, not its center. Position
 -- alone is only the surface if the marker happens to be a zero-height point — now that trees are
 -- tagged with a part/model sized and shaped to match the real branch, Position is that part's
 -- CENTER, so landing there (even after the HipHeight offset in handleTreeJumping) puts the
 -- character's feet roughly half the branch's own height too low, i.e. visually under it.
 -- CFrame.UpVector (not a bare Y offset) so a tilted branch still gets a correct surface point.
+--
+-- An author-placed anchor always wins over that computed guess: drop an Attachment (or a Part)
+-- named "LandingPoint" anywhere inside the tagged tree and every jump onto it lands at that exact
+-- spot, every time — immune to a Model's GetBoundingBox() shifting slightly with orientation, or
+-- an irregular/non-box-shaped mesh, either of which can otherwise nudge the computed surface point
+-- around between attempts even when it's the same target part.
 function TreeJumpUtils.getLandingSurfacePosition(instance: Instance): Vector3?
+	local landingPoint = instance:FindFirstChild(LANDING_POINT_NAME, true)
+	if landingPoint then
+		if landingPoint:IsA("Attachment") then
+			return landingPoint.WorldPosition
+		elseif landingPoint:IsA("BasePart") then
+			return landingPoint.Position
+		end
+	end
+
 	if instance:IsA("BasePart") then
 		return instance.Position + instance.CFrame.UpVector * (instance.Size.Y / 2)
 	elseif instance:IsA("Model") then

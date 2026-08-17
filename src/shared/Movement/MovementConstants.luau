@@ -57,19 +57,21 @@ local MovementConstants = {
 	-- distance, instead of a fixed launch power over/undershooting depending on how far it is.
 	TreeJumpTag = "QinggongTree", -- CollectionService tag expected on each trunk's marker part/Model
 	TreeJumpDetectionRange = 200, -- studs; how far out GetPartBoundsInRadius searches for tagged trees before the screen-space aim filter narrows it down. Straight-line 3D distance, so a marker placed high up a tall trunk needs real headroom here, not just horizontal reach
-	TreeJumpAimFraction = 0.12, -- fraction of the smaller viewport dimension a tree's screen position must fall within of center to count as "aimed at" — small on purpose, this must feel deliberate
+	TreeJumpAimFraction = 0.50, -- fraction of the smaller viewport dimension a tree's screen position must fall within of center to count as "aimed at" — small on purpose, this must feel deliberate
 	TreeJumpSpeed = 150, -- studs/sec the transit travels at, comfortably under MaxPlausibleSpeed's 400 cap so a long-range jump can't get flagged/rubberbanded as implausible
 	TreeJumpMinDuration = 0.25, -- seconds; floor so an adjacent tree doesn't feel like an instant teleport
 	TreeJumpMaxDuration = 1, -- seconds; ceiling so a max-range tree doesn't take forever to reach
-	TreeJumpArcHeight = 5, -- studs the transit bulges above the straight line between launch and target, at the arc's midpoint
+	TreeJumpArcHeight = 10, -- studs the transit bulges above the straight line between launch and target, at the arc's midpoint
 	TreeJumpFallbackForwardPower = 100, -- one-shot impulse used only when no target was found (e.g. it vanished between the entry check and the physics handler running) — a plain forward hop so the input isn't silently eaten
 	TreeJumpFallbackUpwardPower = 70,
 
 	-- Tree Standing / Launching (resting on the branch, then a camera-aimed launch off it — mirrors
 	-- WallHanging -> WallBoost, but facing is driven by the camera instead of a fixed away-from-wall direction)
-	TreeLaunchSpeed = 110, -- forward component of the launch-off, same role as AirDashSpeed
-	TreeLaunchVerticalMult = 1.2, -- how strongly camera pitch feeds into the vertical launch component; mirrors AirDashVerticalMult exactly
-	TreeLaunchDuration = 0.3, -- seconds the FSM stays in TreeLaunching before dropping into Falling
+	TreeLaunchSpeed = 170, -- forward component of the launch-off, same role as AirDashSpeed; bigger than a plain air dash since this is meant to be the payoff move
+	TreeLaunchBaseUpward = 100, -- guaranteed vertical pop regardless of camera pitch, so looking dead ahead still launches you with real height instead of relying entirely on aim; matches TreeLaunchSpeed so the base arc isn't a flat skim (100 only gave ~25 studs of peak height against 170 studs/sec forward, which read as basically nothing)
+	TreeLaunchVerticalSpeed = 60, -- max additional studs/sec pitch alone can add (looking up) or subtract (looking down) on top of the base — decoupled from TreeLaunchSpeed so tuning forward speed can't blow this out too. Now that TreeLaunchBaseUpward alone gives a real launch, this only needs to add a noticeable boost looking up, not double the height (150 stacked on top of the raised base sent you flying)
+	TreeLaunchDuration = 1.0, -- seconds the FSM stays in TreeLaunching before dropping into Falling
+	TreeLaunchGhostDuration = 0.6, -- seconds the character ignores collision right at launch, so it can't clip on the branch/trunk (or the leaf canopy above it) it's launching from — the collision resumes before Falling really settles in, so this can't be pushed arbitrarily high without risking a fall-through-the-floor window; raise it further only if trees still have canopy tall enough to clip past this
 
 	-- Wall Leaping
 	WallLeapOutwardPower = 140,
@@ -87,7 +89,7 @@ local MovementConstants = {
 	LedgeJumpForwardPower = 120,
 
 	-- Landing
-	HeavyFallTimeThreshold = 1.5,
+	HeavyFallTimeThreshold = 1.5, -- seconds of continuous falling before a landing counts as Heavy. At default gravity (~196 studs/s^2) this is roughly a 40-stud drop; the old 1.5s required a ~220-stud drop to ever trigger, which is why Heavy never fired in practice
 	HeavyLandDuration = 0.4,
 	LightLandDuration = 0.3,
 	HeavyLandMinSpeed = 200,
@@ -112,6 +114,11 @@ local MovementConstants = {
 	CameraLandingDipHoldTime = 0.12, -- brief hold at the bottom of the dip before recovering, so the impact reads before it eases back
 	CameraLandingDipAttackSpeed = 16, -- fast ease into the dip, selling the impact
 	CameraLandingDipRecoverySpeed = 5, -- slower ease back to neutral, matching CameraLeanSpeed's smoothness
+
+	-- Camera Crouch Offset (procedural camera sink while Crouching/CrouchWalking — held for as
+	-- long as the state lasts, not a one-shot impact dip like the above)
+	CameraCrouchDistance = 2, -- studs the camera sinks while crouched
+	CameraCrouchSpeed = 8, -- smoothing rate for both sinking in and rising back out
 
 	-- Parkour Raycast Detection
 	WallSideRayDistance = 3.5,

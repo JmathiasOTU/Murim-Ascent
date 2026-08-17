@@ -35,6 +35,7 @@ return {
 		[MovementStateDefs.Sliding] = true,
 		[MovementStateDefs.Jumping] = true,
 		[MovementStateDefs.Falling] = true,
+		[MovementStateDefs.TreeJumping] = true,
 	},
 	[MovementStateDefs.Sprinting] = {
 		[MovementStateDefs.Idle] = true,
@@ -103,6 +104,7 @@ return {
 		[MovementStateDefs.WallHanging] = true,
 		[MovementStateDefs.LightLanding] = true,
 		[MovementStateDefs.HeavyLanding] = true,
+		[MovementStateDefs.TreeJumping] = true,
 	},
 	[MovementStateDefs.Falling] = {
 		[MovementStateDefs.Idle] = true,
@@ -127,6 +129,7 @@ return {
 		-- finishes — resting on the branch, mirroring WallHanging. No chain-use cap by design: this
 		-- is the out-of-combat traversal tool.
 		[MovementStateDefs.TreeStanding] = true,
+		
 	},
 	[MovementStateDefs.TreeStanding] = {
 		[MovementStateDefs.TreeLaunching] = true, -- space: camera-aimed launch off the branch
@@ -134,14 +137,20 @@ return {
 		[MovementStateDefs.Falling] = true, -- ran out of contact/similar unexpected exit
 	},
 	[MovementStateDefs.TreeLaunching] = {
-		-- A fixed-length launch impulse, same shape as WallBoost — always ends by falling.
+		-- Usually a fixed-length launch impulse that ends by falling, same shape as WallBoost —
+		-- but a short/flat launch off a low branch can land well before TreeLaunchDuration's timer
+		-- fires. These grounded targets are what the early-landing fallback (evaluateState in
+		-- ClientMovementState) actually needs in that case; without them here, that fallback's
+		-- fsm:transition() call is a silent no-op and the FSM gets stuck.
 		[MovementStateDefs.Falling] = true,
+		[MovementStateDefs.Idle] = true,
+		[MovementStateDefs.Walking] = true,
+		[MovementStateDefs.Running] = true,
+		[MovementStateDefs.Sprinting] = true,
+		[MovementStateDefs.Crouching] = true,
+		[MovementStateDefs.CrouchWalking] = true,
 	},
 	[MovementStateDefs.WallClingDoubleJump] = {
-		-- Strictly a wall-jump recovery hop, not a general extra air jump — see the
-		-- wallClingDoubleJumpDeadline gate in ClientMovementState, which only unlocks this for a
-		-- short window right after a WallBoost. Always resolves back to Falling; re-grabbing is a
-		-- separate press from there.
 		[MovementStateDefs.Falling] = true,
 	},
 
@@ -199,10 +208,18 @@ return {
 		[MovementStateDefs.Falling] = true,
 	},
 	[MovementStateDefs.WallBoost] = {
-		-- WallBoost is a fixed-length launch impulse (see MovementConstants.WallBoostDuration) that
-		-- always ends by falling — re-clinging requires actually flying back into a wall and
-		-- pressing space again from Jumping/Falling, not an automatic re-stick out of WallBoost.
+		-- Usually ends by falling (see MovementConstants.WallBoostDuration) — re-clinging requires
+		-- actually flying back into a wall and pressing space again from Jumping/Falling, not an
+		-- automatic re-stick out of WallBoost. But a short boost off a low wall can land before the
+		-- apex/duration check fires; these grounded targets are what exitWallBoostToFalling's
+		-- early-landing fallback (evaluateState in ClientMovementState) needs in that case.
 		[MovementStateDefs.Falling] = true,
+		[MovementStateDefs.Idle] = true,
+		[MovementStateDefs.Walking] = true,
+		[MovementStateDefs.Running] = true,
+		[MovementStateDefs.Sprinting] = true,
+		[MovementStateDefs.Crouching] = true,
+		[MovementStateDefs.CrouchWalking] = true,
 	},
 	[MovementStateDefs.WallRunning] = {
 		[MovementStateDefs.WallHanging] = true,

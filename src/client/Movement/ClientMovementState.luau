@@ -171,7 +171,18 @@ function ClientMovementState.start()
 		-- Also used as WallBoostDuration's fallback in case the velocity check never fires (e.g.
 		-- the launch got interrupted by a ceiling), so re-entrant calls once already Falling are a
 		-- harmless no-op (FSM.transition treats "already in this state" as a success with no re-fire).
+		--
+		-- A short boost off a low wall can land before either trigger fires (velocity crossing zero
+		-- at rest on the ground looks identical to crossing zero at the apex). Forcing Falling on an
+		-- already-grounded character would strand the FSM there permanently — same failure shape as
+		-- TreeLaunching's early-landing bug — since Humanoid won't fire another Landed/Running event
+		-- to pull it back out once it's already settled. Check the floor first instead.
 		local function exitWallBoostToFalling()
+			if humanoid.FloorMaterial ~= Enum.Material.Air then
+				evaluateState(true)
+				return
+			end
+
 			local success = fsm:transition(MovementStateDefs.Falling)
 			if success then
 				fallStartTime = os.clock()
@@ -291,9 +302,27 @@ function ClientMovementState.start()
 			end
 		end)
 
+		-- Roblox doesn't always emit Landed on the way down — landing softly enough (low vertical
+		-- speed at contact) can skip straight from Freefall to Running instead. Every landing-
+		-- detection branch below treats that as equivalent to Landed, so the FSM (and therefore the
+		-- Falling animation) can't get stuck waiting for an event that's never coming.
+		local function isImplicitLanding(newState)
+			return newState == Enum.HumanoidStateType.Running or newState == Enum.HumanoidStateType.RunningNoPhysics
+		end
+
+		-- Gates the Running/RunningNoPhysics fallback above to only the states actually expecting a
+		-- landing — Running fires on nearly every ordinary walk-start too, so without this the
+		-- fallback would misfire a bogus landing every time you start moving from a standstill.
+		local AIRBORNE_AWAITING_LANDED = {
+			[MovementStateDefs.Falling] = true,
+			[MovementStateDefs.Jumping] = true,
+			[MovementStateDefs.DoubleJumping] = true,
+			[MovementStateDefs.WallClingDoubleJump] = true,
+		}
+
 		humanoid.StateChanged:Connect(function(_oldState, newState)
 			if fsm.CurrentState == MovementStateDefs.WallLeaping or fsm.CurrentState == MovementStateDefs.WallBoost or fsm.CurrentState == MovementStateDefs.TreeJumping or fsm.CurrentState == MovementStateDefs.TreeLaunching then
-				if newState == Enum.HumanoidStateType.Landed then
+				if newState == Enum.HumanoidStateType.Landed or isImplicitLanding(newState) then
 					evaluateState(true)
 				end
 				return
@@ -333,7 +362,8 @@ function ClientMovementState.start()
 					MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Falling })
 				end
 
-			elseif newState == Enum.HumanoidStateType.Landed then
+			elseif newState == Enum.HumanoidStateType.Landed
+				or (isImplicitLanding(newState) and AIRBORNE_AWAITING_LANDED[fsm.CurrentState]) then
 				hasDoubleJumped = false
 				wallJumpUsesRemaining = MovementConstants.WallJumpMaxUses
 				wallClingDoubleJumpDeadline = 0
@@ -412,10 +442,25 @@ function ClientMovementState.start()
 
 						scheduleTask("TreeLaunch", MovementConstants.TreeLaunchDuration, function()
 							if fsm.CurrentState == MovementStateDefs.TreeLaunching then
-								local fallSuccess = fsm:transition(MovementStateDefs.Falling)
-								if fallSuccess then
-									fallStartTime = os.clock()
-									MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Falling })
+								-- A short/flat launch can land well before this fixed timer fires.
+								-- The early landing already tried evaluateState(true) at that
+								-- moment (see the WallLeaping/WallBoost/TreeJumping/TreeLaunching
+								-- guard in the humanoid.StateChanged handler above), but
+								-- TreeLaunching -> Idle/Walking/Running isn't a legal transition,
+								-- so that attempt was a silent no-op and left the FSM sitting here
+								-- waiting for this timer regardless. Blindly forcing Falling next
+								-- would then permanently strand the FSM there: the character is
+								-- already grounded, so Humanoid won't fire another Landed/Running
+								-- event to ever pull it back out. Check the floor directly instead
+								-- — only fall back to Falling if we're actually still airborne.
+								if humanoid.FloorMaterial ~= Enum.Material.Air then
+									evaluateState(true)
+								else
+									local fallSuccess = fsm:transition(MovementStateDefs.Falling)
+									if fallSuccess then
+										fallStartTime = os.clock()
+										MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Falling })
+									end
 								end
 							end
 						end)

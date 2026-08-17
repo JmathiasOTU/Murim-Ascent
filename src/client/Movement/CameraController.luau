@@ -16,8 +16,17 @@ local LEAN_SPEED = MovementConstants.CameraLeanSpeed
 local LANDING_DIP_DISTANCE = MovementConstants.CameraLandingDipDistance
 local LANDING_DIP_DISTANCE_HEAVY = MovementConstants.CameraLandingDipDistanceHeavy
 local JUMP_DIP_DISTANCE = MovementConstants.CameraJumpDipDistance
+local CROUCH_DISTANCE = MovementConstants.CameraCrouchDistance
+local CROUCH_SPEED = MovementConstants.CameraCrouchSpeed
 
 local baseFOV = (workspace.CurrentCamera and workspace.CurrentCamera.FieldOfView) or MovementConstants.DefaultFOV
+
+-- Held for as long as the state lasts (unlike the impact dip's brief impulse-then-recover) — the
+-- camera sinks while crouched and rises back the instant you're not, in lockstep with the state.
+local CROUCH_CAMERA_STATES = {
+	[MovementStateDefs.Crouching] = true,
+	[MovementStateDefs.CrouchWalking] = true,
+}
 
 -- Mirrors VFXPlaybackController's SPRINT_VFX_CONTINUATION_STATES / MovementSFXController's
 -- SPRINT_SFX_CONTINUATION_STATES: states the FSM can pass through mid-sprint (jump, wall run,
@@ -48,6 +57,7 @@ function CameraController.start()
 	local currentFovOffset = 0
 	local currentDipOffset = 0
 	local targetDipOffset = 0
+	local currentCrouchOffset = 0
 	local isSprintFovActive = false
 
 	ClientMovementState.FSMReady:Connect(function(fsm, character)
@@ -165,7 +175,15 @@ function CameraController.start()
 			local dipAlpha = 1 - math.exp(-dipSpeed * dt)
 			currentDipOffset += (targetDipOffset - currentDipOffset) * dipAlpha
 
-			camera.CFrame *= CFrame.new(0, -currentDipOffset, 0)
+			-- Crouch offset: held for as long as Crouching/CrouchWalking lasts, not a one-shot
+			-- impulse — same speed sinking in and rising back out, in lockstep with the state.
+			-- Stacks additively with the impact dip above (e.g. landing while already crouched
+			-- dips further, then only recovers back up to the crouch offset, not all the way to 0).
+			local targetCrouchOffset = CROUCH_CAMERA_STATES[fsm.CurrentState] and CROUCH_DISTANCE or 0
+			local crouchAlpha = 1 - math.exp(-CROUCH_SPEED * dt)
+			currentCrouchOffset += (targetCrouchOffset - currentCrouchOffset) * crouchAlpha
+
+			camera.CFrame *= CFrame.new(0, -(currentDipOffset + currentCrouchOffset), 0)
 
 			-- FOV kick: widens smoothly while Sprinting to sell the sense of speed. Rides through
 			-- continuation states (jump, wall run, landing, ...) the same way the sprint wind/trail
@@ -194,6 +212,7 @@ function CameraController.start()
 			isSprintFovActive = false
 			currentDipOffset = 0
 			targetDipOffset = 0
+			currentCrouchOffset = 0
 			local camera = workspace.CurrentCamera
 			if camera then
 				camera.FieldOfView = baseFOV
