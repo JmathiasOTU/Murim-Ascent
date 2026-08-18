@@ -153,8 +153,13 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 				if track.IsPlaying then track:Stop(0.2) end
 			end
 		elseif loadedTracks[oldState] then
-			-- Do not instantly stop the Jump or LedgeJump animation if transitioning into a Fall
-			if not ((oldState == MovementStateDefs.Jumping or oldState == MovementStateDefs.LedgeJumping) and newState == MovementStateDefs.Falling) then
+			-- Do not instantly stop the Jump, LedgeJump, or TreeLaunch animation if transitioning
+			-- into a Fall. TreeLaunching now transitions to Falling the instant real Freefall
+			-- fires (see ClientMovementState), which can land well before its one-shot animation
+			-- would naturally finish — cutting it off here made the launch look clipped. It's
+			-- Action priority (see the loop above) so it already visually dominates Falling's own
+			-- Movement-priority loop until it finishes on its own and Falling shows through.
+			if not ((oldState == MovementStateDefs.Jumping or oldState == MovementStateDefs.LedgeJumping or oldState == MovementStateDefs.TreeLaunching) and newState == MovementStateDefs.Falling) then
 				loadedTracks[oldState]:Stop(0.1)
 			end
 		end
@@ -236,8 +241,11 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 	end
 
 	local function playWallLeaping()
-		-- Dynamically check which side the wall WAS on with RaycastParams
-		local rightRay = workspace:Raycast(hrp.CFrame.Position, hrp.CFrame.RightVector * 5, rayParams)
+		-- Dynamically check which side the wall WAS on with RaycastParams. Same distance
+		-- MovementPhysicsController.handleWallLeaping uses to find the wall in the first place
+		-- (MovementConstants.WallLeapRayLength) — a shorter ray here could disagree with physics
+		-- on which side the wall was actually on and play the mirrored animation.
+		local rightRay = workspace:Raycast(hrp.CFrame.Position, hrp.CFrame.RightVector * MovementConstants.WallLeapRayLength, rayParams)
 		if rightRay then
 			if loadedTracks.WallLeapRight then loadedTracks.WallLeapRight:Play(0.05) end
 		else

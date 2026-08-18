@@ -171,7 +171,7 @@ return {
 		[MovementStateDefs.Idle] = true,
 		[MovementStateDefs.Walking] = true,
 		[MovementStateDefs.Running] = true,
-		[MovementStateDefs.Sprinting] = true,
+		[MovementStateDefs.Sprinting] = false,
 		[MovementStateDefs.Crouching] = true,
 		[MovementStateDefs.CrouchWalking] = true,
 	},

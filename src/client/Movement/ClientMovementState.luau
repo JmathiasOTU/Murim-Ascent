@@ -359,8 +359,29 @@ function ClientMovementState.start()
 		}
 
 		local humanoidStateConnection = humanoid.StateChanged:Connect(function(_oldState, newState)
-			if fsm.CurrentState == MovementStateDefs.WallLeaping or fsm.CurrentState == MovementStateDefs.WallBoost or fsm.CurrentState == MovementStateDefs.TreeJumping or fsm.CurrentState == MovementStateDefs.TreeLaunching then
+			if fsm.CurrentState == MovementStateDefs.WallLeaping or fsm.CurrentState == MovementStateDefs.WallBoost or fsm.CurrentState == MovementStateDefs.TreeJumping then
 				if newState == Enum.HumanoidStateType.Landed or isImplicitLanding(newState) then
+					evaluateState(true)
+				end
+				return
+			end
+
+			if fsm.CurrentState == MovementStateDefs.TreeLaunching then
+				-- Unlike WallLeaping/WallBoost/TreeJumping above (self-contained scripted
+				-- arcs/impulses that must ignore a stray Freefall event), TreeLaunching's own
+				-- physics handler is a one-shot impulse — once launched, the character is under
+				-- completely normal gravity/collision, so a real Freefall event here means
+				-- "actually airborne now," same as an ordinary jump. Without this, the FSM sat in
+				-- TreeLaunching (not one of TreeJump's eligible source states) for the entire
+				-- fixed TreeLaunchDuration, making a chained tree-jump feel like it had a delay
+				-- baked in even though the character was visibly already falling.
+				if newState == Enum.HumanoidStateType.Freefall then
+					local success = fsm:transition(MovementStateDefs.Falling)
+					if success then
+						fallStartTime = os.clock()
+						MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Falling })
+					end
+				elseif newState == Enum.HumanoidStateType.Landed or isImplicitLanding(newState) then
 					evaluateState(true)
 				end
 				return
