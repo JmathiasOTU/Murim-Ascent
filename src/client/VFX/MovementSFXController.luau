@@ -28,6 +28,8 @@ local STATE_SFX = {
 	[MovementStateDefs.Sliding] = { name = "Slide", delay = 0, offset = 0 },
 	[MovementStateDefs.LedgeJumping] = { name = "LedgeJump", delay = 0, offset = 0 },
 	[MovementStateDefs.TreeJumping] = { name = "Tree Jump", delay = 0, offset = 0 },
+	[MovementStateDefs.TreeLaunching] = { name = "TreeLaunch", delay = 0, offset = 0 },
+	[MovementStateDefs.TreeStanding] = { name = "TreeLand", delay = 0, offset = 0 },
 }
 
 -- Mirrors VFXPlaybackController's SPRINT_VFX_CONTINUATION_STATES: states the FSM can pass

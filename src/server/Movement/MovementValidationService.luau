@@ -15,6 +15,12 @@ local MovementValidationService = {}
 -- Store the server's authoritative view of each player's movement data
 local playerProfiles = {}
 
+-- Tracks each player's pending un-anchor thread from rubberbandReject, so two rejections landing
+-- within RubberbandAnchorDuration of each other cancel-and-reschedule instead of racing: without
+-- this, the first timer to fire unconditionally un-anchors, prematurely releasing the second
+-- rejection's hold before its own duration elapsed.
+local pendingUnanchor = {}
+
 -- Helper: Forgiving Server-Side Environmental Check
 local function isNearWallOrLedge(character, player)
 	local hrp = character:FindFirstChild("HumanoidRootPart")
@@ -75,6 +81,39 @@ local function isNearTaggedTree(character, player)
 	return false
 end
 
+-- Helper: coarse backstop for LedgeJumping, mirroring the client's own trigger condition
+-- (ClientMovementState's Sliding -> LedgeJumping branch: a forward-projected downward raycast
+-- finding no floor). The master guide names this case directly ("LedgeVaulting... the server must
+-- perform a lightweight validation raycast... before replicating the state") — without this,
+-- Sliding -> LedgeJumping was a fully unrestricted transition, letting a modified client claim a
+-- free LedgeJumpForwardPower/LedgeJumpUpPower launch from anywhere, no actual ledge required.
+local function isAtLedgeEdge(character, player)
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if not hrp then return false end
+
+	local velocity = hrp.AssemblyLinearVelocity
+	local latency = math.min(player:GetNetworkPing() / 2, MovementConstants.WallProximityLatencyCap)
+	local latencyCompensated = hrp.Position + (velocity * latency)
+
+	-- The client's own check projects forward before looking down — that offset has to be
+	-- replicated here too, or this always finds the floor the player is still standing on. Uses
+	-- LedgeJumpServerEdgeCheckForward, not the client's own tighter LedgeJumpEdgeCheckForward:
+	-- matching the client's razor-thin value exactly rejected legitimate ledge jumps once real
+	-- replication lag left the server's hrp.Position meaningfully behind where the client actually
+	-- was. Velocity direction, not CFrame.LookVector, for the same AutoRotate-lag-avoidance reason
+	-- as the latency projection above — falls back to facing only if velocity is negligible.
+	local flatVelocity = Vector3.new(velocity.X, 0, velocity.Z)
+	local forwardDir = if flatVelocity.Magnitude > 0.001 then flatVelocity.Unit else hrp.CFrame.LookVector
+	local origin = latencyCompensated + (forwardDir * MovementConstants.LedgeJumpServerEdgeCheckForward)
+
+	local rayParams = RaycastParams.new()
+	rayParams.FilterType = Enum.RaycastFilterType.Exclude
+	rayParams.FilterDescendantsInstances = {character}
+
+	local downRay = Workspace:Raycast(origin, Vector3.new(0, -MovementConstants.LedgeJumpEdgeCheckDown, 0), rayParams)
+	return downRay == nil
+end
+
 -- Helper: kills momentum and briefly anchors the HRP to force a rubberband correction
 local function rubberbandReject(character, player, reason)
 	warn(string.format("[Anti-Exploit] %s %s", player.Name, reason))
@@ -84,7 +123,11 @@ local function rubberbandReject(character, player, reason)
 		hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
 		hrp.Anchored = true
 
-		task.delay(MovementConstants.RubberbandAnchorDuration, function()
+		if pendingUnanchor[player] then
+			task.cancel(pendingUnanchor[player])
+		end
+		pendingUnanchor[player] = task.delay(MovementConstants.RubberbandAnchorDuration, function()
+			pendingUnanchor[player] = nil
 			if hrp then
 				hrp.Anchored = false
 			end
@@ -168,6 +211,10 @@ function MovementValidationService.start()
 
 	Players.PlayerRemoving:Connect(function(player)
 		playerProfiles[player] = nil
+		if pendingUnanchor[player] then
+			task.cancel(pendingUnanchor[player])
+			pendingUnanchor[player] = nil
+		end
 	end)
 
 	-- The Bouncer: Listen to Client Intents
@@ -244,6 +291,18 @@ function MovementValidationService.start()
 			if targetState == MovementStateDefs.TreeJumping then
 				if not isNearTaggedTree(character, player) then
 					rubberbandReject(character, player, string.format("triggered %s but no tagged tree was found nearby!", targetState))
+					sendCorrection(player, profile, MovementStateChanged)
+					return
+				end
+			end
+
+			-- LedgeJumping: mirrors the client's own forward-projected "no floor ahead" check —
+			-- see isAtLedgeEdge above. Unlike TreeStanding/TreeLaunching, LedgeJumping is reachable
+			-- directly from Sliding with no earlier proximity-gated state in between, so this is a
+			-- real hole to close, not defense-in-depth.
+			if targetState == MovementStateDefs.LedgeJumping then
+				if not isAtLedgeEdge(character, player) then
+					rubberbandReject(character, player, string.format("triggered %s but no ledge edge was found ahead!", targetState))
 					sendCorrection(player, profile, MovementStateChanged)
 					return
 				end

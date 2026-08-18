@@ -20,6 +20,52 @@ end
 
 local LANDING_POINT_NAME = "LandingPoint"
 
+-- A tree can carry more than one LandingPoint (e.g. a low branch and the foliage up top) so a jump
+-- onto it isn't locked into a single fixed spot — collects every one nested anywhere inside the
+-- tagged instance.
+local function collectLandingPoints(instance: Instance): {Vector3}
+	local points = {}
+	for _, descendant in ipairs(instance:GetDescendants()) do
+		if descendant.Name == LANDING_POINT_NAME then
+			if descendant:IsA("Attachment") then
+				table.insert(points, descendant.WorldPosition)
+			elseif descendant:IsA("BasePart") then
+				table.insert(points, descendant.Position)
+			end
+		end
+	end
+	return points
+end
+
+-- Picks between several candidate landing spots the same way findTarget below picks between
+-- different trees: whichever is closest to screen center wins, so which spot you land on is
+-- steerable just by looking at it (aim at the branch vs. the foliage on top) rather than always
+-- defaulting to whichever is physically nearest. Falls back to the first candidate if the camera
+-- can't resolve any of them on-screen — shouldn't happen in practice since the tree itself was
+-- already selected by this same aim check.
+local function pickClosestToScreenCenter(camera: Camera, points: {Vector3}): Vector3
+	if #points == 1 then
+		return points[1]
+	end
+
+	local viewportSize = camera.ViewportSize
+	local screenCenter = Vector2.new(viewportSize.X, viewportSize.Y) / 2
+
+	local best = points[1]
+	local bestScreenDistance = math.huge
+	for _, point in ipairs(points) do
+		local screenPoint, onScreen = camera:WorldToViewportPoint(point)
+		if onScreen then
+			local screenDistance = (Vector2.new(screenPoint.X, screenPoint.Y) - screenCenter).Magnitude
+			if screenDistance < bestScreenDistance then
+				bestScreenDistance = screenDistance
+				best = point
+			end
+		end
+	end
+	return best
+end
+
 -- The actual landing point: the top surface of the tagged part/model, not its center. Position
 -- alone is only the surface if the marker happens to be a zero-height point — now that trees are
 -- tagged with a part/model sized and shaped to match the real branch, Position is that part's
@@ -32,14 +78,10 @@ local LANDING_POINT_NAME = "LandingPoint"
 -- spot, every time — immune to a Model's GetBoundingBox() shifting slightly with orientation, or
 -- an irregular/non-box-shaped mesh, either of which can otherwise nudge the computed surface point
 -- around between attempts even when it's the same target part.
-function TreeJumpUtils.getLandingSurfacePosition(instance: Instance): Vector3?
-	local landingPoint = instance:FindFirstChild(LANDING_POINT_NAME, true)
-	if landingPoint then
-		if landingPoint:IsA("Attachment") then
-			return landingPoint.WorldPosition
-		elseif landingPoint:IsA("BasePart") then
-			return landingPoint.Position
-		end
+function TreeJumpUtils.getLandingSurfacePosition(instance: Instance, camera: Camera): Vector3?
+	local landingPoints = collectLandingPoints(instance)
+	if #landingPoints > 0 then
+		return pickClosestToScreenCenter(camera, landingPoints)
 	end
 
 	if instance:IsA("BasePart") then

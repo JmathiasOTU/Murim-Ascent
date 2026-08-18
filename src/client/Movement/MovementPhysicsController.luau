@@ -244,7 +244,7 @@ function MovementPhysicsController.start()
 			-- never depends on another controller's internal state.
 			local camera = workspace.CurrentCamera
 			local targetInstance = camera and TreeJumpUtils.findTarget(camera, hrp, character)
-			local targetPosition = targetInstance and TreeJumpUtils.getLandingSurfacePosition(targetInstance)
+			local targetPosition = targetInstance and TreeJumpUtils.getLandingSurfacePosition(targetInstance, camera)
 
 			if not targetPosition then
 				-- Target vanished in the instant between the entry check and this handler running
@@ -349,10 +349,30 @@ function MovementPhysicsController.start()
 						steerConnection:Disconnect()
 						steerConnection = nil
 					end
+					-- Snap to the exact target instead of trusting wherever the velocity-driven
+					-- arc's physics simulation actually ended up. VectorVelocity integration is
+					-- only mathematically exact, not physically exact — solver timestep variance
+					-- between the Heartbeat-computed velocity and the engine's own physics step can
+					-- leave the real endpoint a few studs off targetPosition, which is what read as
+					-- randomly floating off the branch on some jumps but not others. Keeps the
+					-- character's current rotation (AutoRotate has been steering it all arc).
+					hrp.CFrame = CFrame.new(targetPosition) * (hrp.CFrame - hrp.CFrame.Position)
 					constraintPool.velocity.VectorVelocity = Vector3.zero
 				end
-				restoreCharacterCollision()
 			end)
+
+			-- Collision restore is deliberately held back a little past the hold-position moment
+			-- above, not fired in the same callback. ClientMovementState re-derives this same
+			-- target/duration independently to drive its own TreeJumping -> TreeStanding transition
+			-- (the "each module re-derives what it needs" decoupling this handler opened with) —
+			-- that recomputation can resolve a frame or two off from this one, so without a buffer,
+			-- collision could come back while the FSM is still (briefly) in TreeJumping. A real
+			-- Landed event in that window is now a LEGAL transition (TreeJumping permits the ground
+			-- states for the separate no-target-found fallback above), so it would silently kick the
+			-- FSM into Idle/Walking right at the landing spot instead of TreeStanding — not visibly
+			-- broken since the spot is correct either way, but it quietly skips TreeStanding
+			-- (camera-aimed launch-off, chain-jump) every time this race is lost.
+			task.delay(duration + MovementConstants.TreeJumpCollisionRestoreBuffer, restoreCharacterCollision)
 		end
 
 		-- 3.65 TREE STANDING (resting on the branch once TreeJumping's arc finishes — mirrors

@@ -72,6 +72,7 @@ return {
 		[MovementStateDefs.Running] = true,
 		[MovementStateDefs.Sprinting] = true,
 		[MovementStateDefs.Crouching] = true,
+		[MovementStateDefs.CrouchWalking] = true,
 		[MovementStateDefs.Dashing] = true,
 		[MovementStateDefs.Jumping] = true,
 	},
@@ -81,6 +82,7 @@ return {
 		[MovementStateDefs.Running] = true,
 		[MovementStateDefs.Sprinting] = true,
 		[MovementStateDefs.Crouching] = true,
+		[MovementStateDefs.CrouchWalking] = true,
 		[MovementStateDefs.Dashing] = true,
 		[MovementStateDefs.Jumping] = true,
 	},
@@ -95,7 +97,13 @@ return {
 		[MovementStateDefs.AirDashing] = true, -- Add this
 		[MovementStateDefs.WallHanging] = true,
 		[MovementStateDefs.WallRunning] = true,
+		[MovementStateDefs.WallClingDoubleJump] = true, -- reachable via the same space-bar umbrella as Falling/WallLeaping
 		[MovementStateDefs.TreeJumping] = true,
+		-- A short hop can skip Freefall entirely and land while still Jumping (see
+		-- AIRBORNE_AWAITING_LANDED in ClientMovementState.luau) — without these, that implicit
+		-- landing has nowhere legal to go and the FSM gets stuck in Jumping's animation.
+		[MovementStateDefs.LightLanding] = true,
+		[MovementStateDefs.HeavyLanding] = true,
 	},
 	[MovementStateDefs.DoubleJumping] = {
 		[MovementStateDefs.Falling] = true,
@@ -105,6 +113,15 @@ return {
 		[MovementStateDefs.LightLanding] = true,
 		[MovementStateDefs.HeavyLanding] = true,
 		[MovementStateDefs.TreeJumping] = true,
+		-- Ground fallback for endAirborneStateToFalling: if DoubleJumpDuration's timer fires while
+		-- already grounded (floor check passed), it resolves straight to a ground state instead of
+		-- Falling — needs somewhere legal to land.
+		[MovementStateDefs.Idle] = true,
+		[MovementStateDefs.Walking] = true,
+		[MovementStateDefs.Running] = true,
+		[MovementStateDefs.Sprinting] = true,
+		[MovementStateDefs.Crouching] = true,
+		[MovementStateDefs.CrouchWalking] = true,
 	},
 	[MovementStateDefs.Falling] = {
 		[MovementStateDefs.Idle] = true,
@@ -129,7 +146,15 @@ return {
 		-- finishes — resting on the branch, mirroring WallHanging. No chain-use cap by design: this
 		-- is the out-of-combat traversal tool.
 		[MovementStateDefs.TreeStanding] = true,
-		
+		-- The fallback impulse (used when the target tree vanishes between the entry check and the
+		-- physics handler running) is a real physics-driven hop that can land for real before the
+		-- scheduled duration elapses — these are what that early-landing case needs to resolve into.
+		[MovementStateDefs.Idle] = false,
+		[MovementStateDefs.Walking] = false,
+		[MovementStateDefs.Running] = false,
+		[MovementStateDefs.Sprinting] = false,
+		[MovementStateDefs.Crouching] = false,
+		[MovementStateDefs.CrouchWalking] = false,
 	},
 	[MovementStateDefs.TreeStanding] = {
 		[MovementStateDefs.TreeLaunching] = true, -- space: camera-aimed launch off the branch
@@ -152,6 +177,14 @@ return {
 	},
 	[MovementStateDefs.WallClingDoubleJump] = {
 		[MovementStateDefs.Falling] = true,
+		-- Ground fallback for endAirborneStateToFalling: this recovery hop is short enough to
+		-- plausibly end already grounded by the time its duration timer fires.
+		[MovementStateDefs.Idle] = true,
+		[MovementStateDefs.Walking] = true,
+		[MovementStateDefs.Running] = true,
+		[MovementStateDefs.Sprinting] = true,
+		[MovementStateDefs.Crouching] = true,
+		[MovementStateDefs.CrouchWalking] = true,
 	},
 
 	[MovementStateDefs.AirDashing] = {
@@ -162,6 +195,9 @@ return {
 		[MovementStateDefs.Idle] = true,
 		[MovementStateDefs.Walking] = true,
 		[MovementStateDefs.Running] = true,
+		[MovementStateDefs.Sprinting] = true,
+		[MovementStateDefs.Crouching] = true,
+		[MovementStateDefs.CrouchWalking] = true,
 		[MovementStateDefs.LightLanding] = true,
 		[MovementStateDefs.HeavyLanding] = true,
 	},
@@ -173,7 +209,9 @@ return {
 		[MovementStateDefs.Idle] = true,
 		[MovementStateDefs.Crouching] = true,
 		[MovementStateDefs.CrouchWalking] = true,
+		[MovementStateDefs.Walking] = true, -- reachable if crouch got toggled off mid-slide (isCrouchToggled cleared) before the friction timer resolves
 		[MovementStateDefs.Running] = true,
+		[MovementStateDefs.Sprinting] = true, -- same as Walking above, but with Run held and already sprint-qualified
 		[MovementStateDefs.Jumping] = true,
 		[MovementStateDefs.Falling] = true,
 		[MovementStateDefs.Dashing] = false,
@@ -196,6 +234,12 @@ return {
 		[MovementStateDefs.AirDashing] = true,
 		[MovementStateDefs.WallRunning] = true,
 		[MovementStateDefs.WallHanging] = true,
+		-- A ledge hop is short/low enough that Roblox can skip Freefall entirely and land while
+		-- still in LedgeJumping (see AIRBORNE_AWAITING_LANDED in ClientMovementState.luau) —
+		-- without these, that implicit landing has nowhere legal to transition into and the FSM
+		-- gets stuck in LedgeJumping's one-shot animation permanently.
+		[MovementStateDefs.LightLanding] = true,
+		[MovementStateDefs.HeavyLanding] = true,
 	},
 
 	-- ==========================================
@@ -232,16 +276,27 @@ return {
 		[MovementStateDefs.Running] = true,
 		[MovementStateDefs.Sprinting] = true,
 		[MovementStateDefs.Crouching] = true,
+		[MovementStateDefs.CrouchWalking] = true,
 	},
 	[MovementStateDefs.WallLeaping] = {
 		[MovementStateDefs.Falling] = true,
 		[MovementStateDefs.DoubleJumping] = true,
 		[MovementStateDefs.WallHanging] = true,
 		[MovementStateDefs.WallRunning] = true,
+		-- Reachable via the same space-bar umbrella (Jumping/Falling/WallLeaping) as the other two
+		[MovementStateDefs.WallClingDoubleJump] = true,
 		[MovementStateDefs.Dashing] = true,
+		-- ClientMovementState's TriggerDash (Q) and TreeJump (Y) both explicitly list WallLeaping as
+		-- an eligible source state — without these, those inputs were silently swallowed while
+		-- wall-leaping since the requested transition failed the table check.
+		[MovementStateDefs.AirDashing] = true,
+		[MovementStateDefs.TreeJumping] = true,
 		[MovementStateDefs.Idle] = true,
 		[MovementStateDefs.Walking] = true,
 		[MovementStateDefs.Running] = true,
+		[MovementStateDefs.Sprinting] = true,
+		[MovementStateDefs.Crouching] = true,
+		[MovementStateDefs.CrouchWalking] = true,
 		[MovementStateDefs.LightLanding] = true,
 		[MovementStateDefs.HeavyLanding] = true,
 	},

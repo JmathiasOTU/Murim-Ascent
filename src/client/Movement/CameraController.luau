@@ -1,6 +1,7 @@
 -- src/client/Movement/CameraController.luau
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Lighting = game:GetService("Lighting")
 
 local ClientMovementState = require(script.Parent.ClientMovementState)
 local MovementStateDefs = require(ReplicatedStorage.Shared.Movement.MovementStates.MovementStateDefs)
@@ -18,6 +19,9 @@ local LANDING_DIP_DISTANCE_HEAVY = MovementConstants.CameraLandingDipDistanceHea
 local JUMP_DIP_DISTANCE = MovementConstants.CameraJumpDipDistance
 local CROUCH_DISTANCE = MovementConstants.CameraCrouchDistance
 local CROUCH_SPEED = MovementConstants.CameraCrouchSpeed
+local TREE_LAUNCH_FOV_PUNCH = MovementConstants.CameraTreeLaunchFovPunch
+local TREE_JUMP_BLUR_SIZE = MovementConstants.CameraTreeJumpBlurSize
+local TREE_JUMP_ZOOM_OUT = MovementConstants.CameraTreeJumpZoomOut
 
 local baseFOV = (workspace.CurrentCamera and workspace.CurrentCamera.FieldOfView) or MovementConstants.DefaultFOV
 
@@ -59,6 +63,19 @@ function CameraController.start()
 	local targetDipOffset = 0
 	local currentCrouchOffset = 0
 	local isSprintFovActive = false
+	local currentFovPunch = 0
+	local targetFovPunch = 0
+	local currentBlurSize = 0
+	local targetBlurSize = 0
+	local currentTreeJumpZoom = 0
+
+	-- One persistent effect for the whole client session (not per-character) — created once here
+	-- rather than per FSMReady so a respawn reuses it instead of leaving an orphaned BlurEffect
+	-- behind in Lighting.
+	local treeJumpBlur = Instance.new("BlurEffect")
+	treeJumpBlur.Name = "QinggongTreeJumpBlur"
+	treeJumpBlur.Size = 0
+	treeJumpBlur.Parent = Lighting
 
 	ClientMovementState.FSMReady:Connect(function(fsm, character)
 		local humanoid = character:WaitForChild("Humanoid")
@@ -95,6 +112,22 @@ function CameraController.start()
 			end)
 		end
 
+		-- Same impulse shape as triggerCameraDip above, just on FOV instead of vertical offset —
+		-- a quick zoom-in on a launch, held briefly, then eased back out. Additive on top of
+		-- whatever SprintFovBoost is doing (see the render step below), not a replacement for it.
+		local fovPunchHoldTask
+		local function triggerFovPunch(punchAmount)
+			targetFovPunch = punchAmount
+
+			if fovPunchHoldTask then
+				task.cancel(fovPunchHoldTask)
+			end
+			fovPunchHoldTask = task.delay(MovementConstants.CameraFovPunchHoldTime, function()
+				fovPunchHoldTask = nil
+				targetFovPunch = 0
+			end)
+		end
+
 		local cameraStateConnection = fsm.StateChanged:Connect(function(_oldState, newState)
 			if newState == MovementStateDefs.HeavyLanding then
 				triggerCameraDip(LANDING_DIP_DISTANCE_HEAVY)
@@ -102,6 +135,20 @@ function CameraController.start()
 				triggerCameraDip(LANDING_DIP_DISTANCE)
 			elseif newState == MovementStateDefs.Jumping then
 				triggerCameraDip(JUMP_DIP_DISTANCE)
+			end
+
+			if newState == MovementStateDefs.TreeLaunching then
+				triggerFovPunch(TREE_LAUNCH_FOV_PUNCH)
+			end
+
+			-- Blur while TreeJumping: held for the whole transit, not a one-shot impulse — blurs in
+			-- the instant the jump activates, clears back out the instant it ends (arrived at
+			-- TreeStanding, or interrupted into Falling/a correction snap), mirroring
+			-- VFXPlaybackController's hide/show-character handling for the same state.
+			if newState == MovementStateDefs.TreeJumping then
+				targetBlurSize = TREE_JUMP_BLUR_SIZE
+			elseif _oldState == MovementStateDefs.TreeJumping then
+				targetBlurSize = 0
 			end
 
 			-- Only an actual Sprinting entry turns the FOV kick on; continuation states just let
@@ -185,6 +232,13 @@ function CameraController.start()
 
 			camera.CFrame *= CFrame.new(0, -(currentDipOffset + currentCrouchOffset), 0)
 
+			-- Tree-jump blur: held for the whole transit, same "target + exponential chase" shape
+			-- as the crouch offset above, just applied to the BlurEffect's Size instead of a CFrame
+			-- offset.
+			local blurAlpha = 1 - math.exp(-MovementConstants.CameraTreeJumpBlurSpeed * dt)
+			currentBlurSize += (targetBlurSize - currentBlurSize) * blurAlpha
+			treeJumpBlur.Size = currentBlurSize
+
 			-- FOV kick: widens smoothly while Sprinting to sell the sense of speed. Rides through
 			-- continuation states (jump, wall run, landing, ...) the same way the sprint wind/trail
 			-- VFX does, so a jump mid-sprint doesn't snap it back in — only actually stopping
@@ -193,7 +247,23 @@ function CameraController.start()
 			local targetFovOffset = isSprintFovActive and MovementConstants.SprintFovBoost or 0
 			local fovAlpha = 1 - math.exp(-MovementConstants.SprintFovSpeed * dt)
 			currentFovOffset += (targetFovOffset - currentFovOffset) * fovAlpha
-			camera.FieldOfView = baseFOV + currentFovOffset
+
+			-- FOV punch (TreeJumping/TreeLaunching launch): same fast-attack/slow-recovery shape
+			-- as the impact dip, stacked additively on top of the sprint kick above.
+			local punchSpeed = targetFovPunch ~= 0 and MovementConstants.CameraFovPunchAttackSpeed or MovementConstants.CameraFovPunchRecoverySpeed
+			local punchAlpha = 1 - math.exp(-punchSpeed * dt)
+			currentFovPunch += (targetFovPunch - currentFovPunch) * punchAlpha
+
+			-- Tree-jump zoom out: held for the whole TreeJumping transit, same "target +
+			-- exponential chase" shape as the sprint kick above — not a one-shot punch, since this
+			-- needs to read through the entire mid-air flight, not just the launch instant.
+			-- Checking fsm.CurrentState directly (like the crouch offset above) is enough here
+			-- without needing a toggle flag or a continuation-state list.
+			local targetTreeJumpZoom = fsm.CurrentState == MovementStateDefs.TreeJumping and TREE_JUMP_ZOOM_OUT or 0
+			local treeJumpZoomAlpha = 1 - math.exp(-MovementConstants.CameraTreeJumpZoomSpeed * dt)
+			currentTreeJumpZoom += (targetTreeJumpZoom - currentTreeJumpZoom) * treeJumpZoomAlpha
+
+			camera.FieldOfView = baseFOV + currentFovOffset + currentFovPunch + currentTreeJumpZoom
 		end)
 
 		local cleaned = false
@@ -207,12 +277,22 @@ function CameraController.start()
 				task.cancel(dipHoldTask)
 				dipHoldTask = nil
 			end
+			if fovPunchHoldTask then
+				task.cancel(fovPunchHoldTask)
+				fovPunchHoldTask = nil
+			end
 			currentRoll = 0
 			currentFovOffset = 0
 			isSprintFovActive = false
+			currentFovPunch = 0
+			targetFovPunch = 0
 			currentDipOffset = 0
 			targetDipOffset = 0
 			currentCrouchOffset = 0
+			currentBlurSize = 0
+			targetBlurSize = 0
+			treeJumpBlur.Size = 0
+			currentTreeJumpZoom = 0
 			local camera = workspace.CurrentCamera
 			if camera then
 				camera.FieldOfView = baseFOV

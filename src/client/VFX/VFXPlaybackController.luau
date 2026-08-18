@@ -32,6 +32,9 @@ local BLOCK_SOUNDS = {
 local SPRINT_VFX_FORWARD_OFFSET = 4 -- studs ahead of HumanoidRootPart the wind trail is welded at
 local SPRINT_VFX_NAMES = { "SprintVFX" } -- every prefab cloned/welded while Sprinting
 
+local SLIDE_VFX_DOWN_OFFSET = 2 -- studs below HumanoidRootPart the dust trail is welded at, so it reads near the ground instead of at torso height
+local SLIDE_VFX_NAMES = { "SlideVfx" } -- every prefab cloned/welded while Sliding
+
 -- States the FSM can pass through mid-sprint (jump, wall run, land, etc.) that should NOT cut the
 -- trail. Only leaving Sprinting for a state outside this set (Walking, Idle, Crouching, an
 -- explicit Dash/Slide, ...) counts as "actually stopped sprinting".
@@ -68,9 +71,11 @@ local function playRandomSound(soundTable, parent: Instance)
 end
 
 local ONE_SHOT_VFX_CLEANUP_TIME = 4 -- seconds; gives particles time to fade before the clone is destroyed
+local AIR_JUMP_VFX_CLEANUP_TIME = 2 -- shorter than the shared default above; the double-jump burst was lingering noticeably past the moment itself
 
--- Clones a named one-shot prefab from VFX.Movement at targetCFrame and bursts its emitters once
-local function playBurstVFX(vfxName: string, targetCFrame: CFrame)
+-- Clones a named one-shot prefab from VFX.Movement at targetCFrame and bursts its emitters once.
+-- cleanupTime overrides the default lifespan for VFX that need to fade faster/slower than most.
+local function playBurstVFX(vfxName: string, targetCFrame: CFrame, cleanupTime: number?)
 	local vfxTemplate = MovementVFXFolder:FindFirstChild(vfxName)
 	if not vfxTemplate then
 		warn("Missing " .. vfxName .. " in ReplicatedStorage.Assets.VFX.Movement")
@@ -89,11 +94,16 @@ local function playBurstVFX(vfxName: string, targetCFrame: CFrame)
 
 	for _, emitter in ipairs(vfxClone:GetDescendants()) do
 		if emitter:IsA("ParticleEmitter") then
+			-- Force this off regardless of how the prefab was left in Studio: a burst VFX must
+			-- fire exactly once via the Emit() call below, never stream continuously off its own
+			-- Rate for as long as the clone survives — Enabled=true left on the emitter was
+			-- reading as "emitting for the whole cleanup window" instead of a single pop.
+			emitter.Enabled = false
 			emitter:Emit(emitter:GetAttribute("EmitCount") or 15)
 		end
 	end
 
-	Debris:AddItem(vfxClone, ONE_SHOT_VFX_CLEANUP_TIME)
+	Debris:AddItem(vfxClone, cleanupTime or ONE_SHOT_VFX_CLEANUP_TIME)
 end
 
 -- HumanoidRootPart sits at roughly torso height, not the feet — bursting a landing VFX straight at
@@ -105,9 +115,12 @@ local function getGroundCFrame(hrp: BasePart, character: Instance): CFrame
 	rayParams.FilterDescendantsInstances = {character}
 	rayParams.IgnoreWater = true
 
+	-- Keep the character's own facing, not just its position — CFrame.new(position) alone has zero
+	-- rotation (always faces the same fixed world direction), so the VFX would play sideways
+	-- relative to the character any time they aren't facing that one specific way.
 	local rayResult = workspace:Raycast(hrp.Position, Vector3.new(0, -MovementConstants.GroundVFXCheckDistance, 0), rayParams)
 	if rayResult then
-		return CFrame.new(rayResult.Position)
+		return CFrame.new(rayResult.Position) * hrp.CFrame.Rotation
 	end
 	return hrp.CFrame -- fallback: no floor found within range, shouldn't normally happen right after a landing
 end
@@ -198,15 +211,56 @@ local function onCombatVisual(effectType: string, position: Vector3)
 end
 
 
+-- Manages a group of continuously-active VFX parts welded to the character's HumanoidRootPart at
+-- a fixed local offset for as long as a state is toggled on — shared by Sprint's wind trail and
+-- Slide's dust trail. Cuts instantly (no fade-out) the moment the toggle turns off, since both
+-- are meant to disappear the instant their state ends, not linger.
+local function createToggleableVFX(hrp: BasePart, vfxNames: {string}, localOffset: CFrame)
+	local activeParts = {}
+
+	return function(isEnabled: boolean)
+		if isEnabled then
+			if #activeParts > 0 then return end -- Already playing
+
+			for _, vfxName in ipairs(vfxNames) do
+				local vfxTemplate = MovementVFXFolder:FindFirstChild(vfxName)
+				if vfxTemplate then
+					local vfxClone = vfxTemplate:Clone()
+					vfxClone.CFrame = hrp.CFrame * localOffset
+					vfxClone.Parent = hrp
+
+					-- The template ships with its own WeldConstraint (Part0 = itself), but Part1
+					-- can't be baked in ahead of time — it has to point at *this* character's
+					-- HumanoidRootPart, which only exists once the character has spawned.
+					local weld = vfxClone:FindFirstChildOfClass("WeldConstraint")
+					if weld then
+						weld.Part0 = vfxClone
+						weld.Part1 = hrp
+					end
+
+					table.insert(activeParts, vfxClone)
+				else
+					warn("Missing " .. vfxName .. " in ReplicatedStorage.Assets.VFX.Movement")
+				end
+			end
+
+		elseif #activeParts > 0 then
+			for _, vfxPart in ipairs(activeParts) do
+				vfxPart:Destroy()
+			end
+			table.clear(activeParts)
+		end
+	end
+end
+
 -- Shared between the local player and every remote player (RemoteMovementState fires the same
--- signal shape). activeSprintVFXParts is scoped per-character here on purpose — it used to be a
--- single module-level variable, which meant two players sprinting at once would clobber each
--- other's trail.
+-- signal shape).
 local function setupCharacterVFX(fsm, character)
 	local humanoid = character:WaitForChild("Humanoid")
 	local hrp = character:WaitForChild("HumanoidRootPart")
 
-	local activeSprintVFXParts = {}
+	local toggleSprintVFX = createToggleableVFX(hrp, SPRINT_VFX_NAMES, CFrame.new(0, 0, -SPRINT_VFX_FORWARD_OFFSET))
+	local toggleSlideVFX = createToggleableVFX(hrp, SLIDE_VFX_NAMES, CFrame.new(0, -SLIDE_VFX_DOWN_OFFSET, 0))
 	local hiddenTransparency = nil -- non-nil only while the real character is hidden mid tree-jump
 
 	-- Hides the real character for the flight so it reads as "gone" during the transit. Stores
@@ -233,65 +287,35 @@ local function setupCharacterVFX(fsm, character)
 		hiddenTransparency = nil
 	end
 
-	local function toggleSprintVFX(isEnabled)
-		if isEnabled then
-			if #activeSprintVFXParts > 0 then return end -- Already playing
-
-			for _, vfxName in ipairs(SPRINT_VFX_NAMES) do
-				local vfxTemplate = MovementVFXFolder:FindFirstChild(vfxName)
-				if vfxTemplate then
-					local vfxClone = vfxTemplate:Clone()
-					vfxClone.CFrame = hrp.CFrame * CFrame.new(0, 0, -SPRINT_VFX_FORWARD_OFFSET)
-					vfxClone.Parent = hrp
-
-					-- The template ships with its own WeldConstraint (Part0 = itself), but Part1
-					-- can't be baked in ahead of time — it has to point at *this* character's
-					-- HumanoidRootPart, which only exists once the character has spawned.
-					local weld = vfxClone:FindFirstChildOfClass("WeldConstraint")
-					if weld then
-						weld.Part0 = vfxClone
-						weld.Part1 = hrp
-					end
-
-					table.insert(activeSprintVFXParts, vfxClone)
-				else
-					warn("Missing " .. vfxName .. " in ReplicatedStorage.Assets.VFX.Movement")
-				end
-			end
-
-		elseif #activeSprintVFXParts > 0 then
-			-- Cut instantly the moment Sprinting ends — no fade-out trail
-			for _, vfxPart in ipairs(activeSprintVFXParts) do
-				vfxPart:Destroy()
-			end
-			table.clear(activeSprintVFXParts)
-		end
-	end
-
 	local fsmConnection = fsm.StateChanged:Connect(function(oldState, newState)
 		if newState == MovementStateDefs.LedgeJumping then
 			playBurstVFX("LedgeJumpVFX", hrp.CFrame)
 		elseif newState == MovementStateDefs.WallLeaping then
 			playBurstVFX("WallLeapVfx", hrp.CFrame)
 		elseif newState == MovementStateDefs.DoubleJumping then
-			playBurstVFX("AirJumpVfx", hrp.CFrame)
+			playBurstVFX("AirJumpVfx", hrp.CFrame, AIR_JUMP_VFX_CLEANUP_TIME)
 			playLimbTrail("AirJumpTrailVfx", character, MovementConstants.DoubleJumpDuration)
 		elseif newState == MovementStateDefs.HeavyLanding then
 			playBurstVFX("HardLandVfx", getGroundCFrame(hrp, character))
 		elseif newState == MovementStateDefs.Dashing then
 			playLimbTrail("DashTrailVfx", character, MovementConstants.DashDuration)
 		elseif newState == MovementStateDefs.AirDashing then
+			playBurstVFX("AirDashVfx", hrp.CFrame)
 			playLimbTrail("DashTrailVfx", character, MovementConstants.AirDashDuration)
 		elseif newState == MovementStateDefs.TreeJumping then
 			playBurstVFX("TreeJumpVfx", hrp.CFrame)
 			hideCharacterForTreeJump()
+		elseif newState == MovementStateDefs.TreeStanding then
+			playBurstVFX("TreeLandVfx", getGroundCFrame(hrp, character))
 		end
 
 		-- TreeJumping is the only state that hides the character, so leaving it for ANY other
 		-- state (arrived at TreeStanding, or interrupted into Falling/a correction snap) is
-		-- exactly "landed at the destination" — bring it back.
+		-- exactly "landed at the destination" — bring it back, with a burst marking the
+		-- reappearance itself at wherever the character currently is.
 		if oldState == MovementStateDefs.TreeJumping and newState ~= MovementStateDefs.TreeJumping then
 			showCharacterAfterTreeJump()
+			playBurstVFX("TreeLandVfx2", hrp.CFrame)
 		end
 
 		-- SPRINTING: Toggle the continuous trail on/off. Passing through a continuation state
@@ -301,6 +325,15 @@ local function setupCharacterVFX(fsm, character)
 			toggleSprintVFX(true)
 		elseif not SPRINT_VFX_CONTINUATION_STATES[newState] then
 			toggleSprintVFX(false)
+		end
+
+		-- SLIDING: unlike Sprint, Sliding has no continuation states to ride through — it's a
+		-- short, self-contained state that always transitions directly out, so leaving it for
+		-- ANY other state cuts the dust trail immediately.
+		if newState == MovementStateDefs.Sliding then
+			toggleSlideVFX(true)
+		elseif oldState == MovementStateDefs.Sliding then
+			toggleSlideVFX(false)
 		end
 	end)
 
@@ -312,6 +345,7 @@ local function setupCharacterVFX(fsm, character)
 		cleaned = true
 
 		toggleSprintVFX(false)
+		toggleSlideVFX(false)
 
 		if fsmConnection then
 			fsmConnection:Disconnect()

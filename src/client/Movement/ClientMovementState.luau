@@ -104,9 +104,27 @@ function ClientMovementState.start()
 
 		local function evaluateState(forceExitAction)
 			-- These states own their own exit transition; a blind idle/walk/run re-evaluation must not interrupt them
-			if not forceExitAction and (fsm.CurrentState == MovementStateDefs.Dashing or fsm.CurrentState == MovementStateDefs.Sliding or fsm.CurrentState == MovementStateDefs.WallBoost or fsm.CurrentState == MovementStateDefs.WallRunning or fsm.CurrentState == MovementStateDefs.WallLeaping or fsm.CurrentState == MovementStateDefs.HeavyLanding or fsm.CurrentState == MovementStateDefs.LightLanding) then return end
+			if not forceExitAction and (
+				fsm.CurrentState == MovementStateDefs.Dashing
+				or fsm.CurrentState == MovementStateDefs.Sliding
+				or fsm.CurrentState == MovementStateDefs.WallBoost
+				or fsm.CurrentState == MovementStateDefs.WallRunning
+				or fsm.CurrentState == MovementStateDefs.WallLeaping
+				or fsm.CurrentState == MovementStateDefs.HeavyLanding
+				or fsm.CurrentState == MovementStateDefs.LightLanding
+				or fsm.CurrentState == MovementStateDefs.TreeJumping
+				or fsm.CurrentState == MovementStateDefs.TreeLaunching
+			) then
+				return
+			end
 
-			if not forceExitAction and (fsm.CurrentState == MovementStateDefs.Jumping or fsm.CurrentState == MovementStateDefs.DoubleJumping or fsm.CurrentState == MovementStateDefs.Falling) then return end
+			if not forceExitAction and (
+				fsm.CurrentState == MovementStateDefs.Jumping
+				or fsm.CurrentState == MovementStateDefs.DoubleJumping
+				or fsm.CurrentState == MovementStateDefs.Falling
+			) then
+				return
+			end
 			local isMoving = humanoid.MoveDirection.Magnitude > 0
 			local targetState = MovementStateDefs.Idle
 
@@ -137,6 +155,28 @@ function ClientMovementState.start()
 			end
 		end
 
+		-- Forces a fixed-duration airborne action out of its state by checking the floor first,
+		-- not blindly assuming Falling: forcing Falling on an already-grounded character would
+		-- strand the FSM there permanently, since Humanoid won't fire another Landed/Running event
+		-- to pull it back out once it's already settled. Returns whether it actually transitioned
+		-- to Falling, so callers can layer their own side effects (like WallBoost's recovery-hop
+		-- window) on top only when that happened. Defined ahead of processParkour below so
+		-- WallRunning's own "ran out of wall" exit can reuse it too, not just the fixed-duration
+		-- timers further down this file.
+		local function endAirborneStateToFalling()
+			if humanoid.FloorMaterial ~= Enum.Material.Air then
+				evaluateState(true)
+				return false
+			end
+
+			local success = fsm:transition(MovementStateDefs.Falling)
+			if success then
+				fallStartTime = os.clock()
+				MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Falling })
+			end
+			return success
+		end
+
 		local function processParkour()
 			local state = fsm.CurrentState
 
@@ -160,36 +200,23 @@ function ClientMovementState.start()
 				local leftRay = workspace:Raycast(hrp.CFrame.Position, -hrp.CFrame.RightVector * MovementConstants.WallSideRayDistance, parkourRayParams)
 				local floorRay = workspace:Raycast(hrp.CFrame.Position, Vector3.new(0, -3.2, 0), parkourRayParams)
 
+				-- Wall ran out (no side contact) or a floor showed up underneath — either way the
+				-- run itself is over, but NOT the same exit: running off the end of a wall while
+				-- still up high has nothing below yet, so this must fall, not snap straight to a
+				-- ground state the way a floor detection legitimately would. endAirborneStateToFalling
+				-- re-derives the real answer off humanoid.FloorMaterial instead of trusting which of
+				-- the two raycasts fired.
 				if (not rightRay and not leftRay) or floorRay then
-					evaluateState(true)
+					endAirborneStateToFalling()
 				end
 			end
 		end
 
-		-- Ends WallBoost the moment its vertical velocity actually crosses into descent (the real
-		-- physics apex) instead of after a guessed fixed duration — see the Heartbeat check below.
-		-- Also used as WallBoostDuration's fallback in case the velocity check never fires (e.g.
-		-- the launch got interrupted by a ceiling), so re-entrant calls once already Falling are a
-		-- harmless no-op (FSM.transition treats "already in this state" as a success with no re-fire).
-		--
-		-- A short boost off a low wall can land before either trigger fires (velocity crossing zero
-		-- at rest on the ground looks identical to crossing zero at the apex). Forcing Falling on an
-		-- already-grounded character would strand the FSM there permanently — same failure shape as
-		-- TreeLaunching's early-landing bug — since Humanoid won't fire another Landed/Running event
-		-- to pull it back out once it's already settled. Check the floor first instead.
 		local function exitWallBoostToFalling()
-			if humanoid.FloorMaterial ~= Enum.Material.Air then
-				evaluateState(true)
-				return
-			end
-
-			local success = fsm:transition(MovementStateDefs.Falling)
-			if success then
-				fallStartTime = os.clock()
+			if endAirborneStateToFalling() then
 				-- The recovery-hop window opens right here, at the real apex, instead of at the
 				-- launch or after a fixed timer — matching when the player would actually want it.
 				wallClingDoubleJumpDeadline = os.clock() + MovementConstants.WallClingDoubleJumpWindow
-				MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Falling })
 			end
 		end
 
@@ -200,10 +227,16 @@ function ClientMovementState.start()
 		local function attemptTreeJump()
 			local camera = workspace.CurrentCamera
 			local treeTarget = camera and TreeJumpUtils.findTarget(camera, hrp, character)
-			if not treeTarget then return false end
+			if not treeTarget then
+				warn("[TreeJump] No tagged tree found in range/aim -- check the QinggongTree CollectionService tag is on the tree (or an ancestor of it) and that you're within TreeJumpDetectionRange and looking roughly at it")
+				return false
+			end
 
 			local success = fsm:transition(MovementStateDefs.TreeJumping)
-			if not success then return false end
+			if not success then
+				warn(string.format("[TreeJump] Found %s but the FSM rejected the transition from %s -- likely mid another move that blocks it", treeTarget:GetFullName(), tostring(fsm.CurrentState)))
+				return false
+			end
 
 			hasDoubleJumped = false
 			MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.TreeJumping })
@@ -212,7 +245,7 @@ function ClientMovementState.start()
 			-- position plus the HipHeight/HRP-height offset down to the feet), so the FSM's move
 			-- into TreeStanding lines up with exactly when the transit actually finishes instead of
 			-- drifting off a mismatched distance and cutting the arc short or leaving it hanging.
-			local targetPosition = TreeJumpUtils.getLandingSurfacePosition(treeTarget)
+			local targetPosition = TreeJumpUtils.getLandingSurfacePosition(treeTarget, camera)
 			if targetPosition then
 				targetPosition += Vector3.new(0, humanoid.HipHeight + (hrp.Size.Y / 2), 0)
 			end
@@ -318,9 +351,14 @@ function ClientMovementState.start()
 			[MovementStateDefs.Jumping] = true,
 			[MovementStateDefs.DoubleJumping] = true,
 			[MovementStateDefs.WallClingDoubleJump] = true,
+			-- A ledge hop is short/low enough that Freefall is frequently skipped entirely —
+			-- without this, that implicit landing is silently ignored and the FSM is stuck in
+			-- LedgeJumping's one-shot animation until the player dies/respawns.
+			[MovementStateDefs.LedgeJumping] = true,
+				[MovementStateDefs.AirDashing] = true, -- a fast, low air dash can also skim the ground and skip Freefall the same way
 		}
 
-		humanoid.StateChanged:Connect(function(_oldState, newState)
+		local humanoidStateConnection = humanoid.StateChanged:Connect(function(_oldState, newState)
 			if fsm.CurrentState == MovementStateDefs.WallLeaping or fsm.CurrentState == MovementStateDefs.WallBoost or fsm.CurrentState == MovementStateDefs.TreeJumping or fsm.CurrentState == MovementStateDefs.TreeLaunching then
 				if newState == Enum.HumanoidStateType.Landed or isImplicitLanding(newState) then
 					evaluateState(true)
@@ -348,7 +386,14 @@ function ClientMovementState.start()
 					local targetState = if not downRay then MovementStateDefs.LedgeJumping else MovementStateDefs.Jumping
 
 					local success = fsm:transition(targetState)
-					if success then MovementIntent:FireServer("UpdateState", { targetState = targetState }) end
+					if success then
+						-- Marks the start of this hop's air time so the eventual landing (whether
+						-- via a real Freefall or the implicit-landing fallback above) classifies
+						-- Light vs Heavy off this jump, not a stale timestamp from whatever the
+						-- character was doing last time it was airborne.
+						fallStartTime = os.clock()
+						MovementIntent:FireServer("UpdateState", { targetState = targetState })
+					end
 					return
 				end
 
@@ -403,10 +448,7 @@ function ClientMovementState.start()
 
 						scheduleTask("WallLeap", MovementConstants.WallLeapDuration, function()
 							if fsm.CurrentState == MovementStateDefs.WallLeaping then
-								local fallSuccess = fsm:transition(MovementStateDefs.Falling)
-								if fallSuccess then
-									MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Falling })
-								end
+								endAirborneStateToFalling()
 							end
 						end)
 						return Enum.ContextActionResult.Sink
@@ -448,20 +490,8 @@ function ClientMovementState.start()
 								-- guard in the humanoid.StateChanged handler above), but
 								-- TreeLaunching -> Idle/Walking/Running isn't a legal transition,
 								-- so that attempt was a silent no-op and left the FSM sitting here
-								-- waiting for this timer regardless. Blindly forcing Falling next
-								-- would then permanently strand the FSM there: the character is
-								-- already grounded, so Humanoid won't fire another Landed/Running
-								-- event to ever pull it back out. Check the floor directly instead
-								-- — only fall back to Falling if we're actually still airborne.
-								if humanoid.FloorMaterial ~= Enum.Material.Air then
-									evaluateState(true)
-								else
-									local fallSuccess = fsm:transition(MovementStateDefs.Falling)
-									if fallSuccess then
-										fallStartTime = os.clock()
-										MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Falling })
-									end
-								end
+								-- waiting for this timer regardless.
+								endAirborneStateToFalling()
 							end
 						end)
 						return Enum.ContextActionResult.Sink
@@ -479,7 +509,7 @@ function ClientMovementState.start()
 							MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.WallRunning })
 
 							scheduleTask("WallRun", MovementConstants.WallRunDuration, function()
-								if fsm.CurrentState == MovementStateDefs.WallRunning then evaluateState(true) end
+								if fsm.CurrentState == MovementStateDefs.WallRunning then endAirborneStateToFalling() end
 							end)
 							return Enum.ContextActionResult.Sink
 						end
@@ -506,11 +536,7 @@ function ClientMovementState.start()
 
 							scheduleTask("WallClingDoubleJump", MovementConstants.WallClingDoubleJumpDuration, function()
 								if fsm.CurrentState == MovementStateDefs.WallClingDoubleJump then
-									local fallSuccess = fsm:transition(MovementStateDefs.Falling)
-									if fallSuccess then
-										fallStartTime = os.clock()
-										MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Falling })
-									end
+									endAirborneStateToFalling()
 								end
 							end)
 							return Enum.ContextActionResult.Sink
@@ -525,10 +551,7 @@ function ClientMovementState.start()
 
 							scheduleTask("DoubleJump", MovementConstants.DoubleJumpDuration, function()
 								if fsm.CurrentState == MovementStateDefs.DoubleJumping then
-									local fallSuccess = fsm:transition(MovementStateDefs.Falling)
-									if fallSuccess then
-										MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Falling })
-									end
+									endAirborneStateToFalling()
 								end
 							end)
 							return Enum.ContextActionResult.Sink
@@ -597,10 +620,7 @@ function ClientMovementState.start()
 
 							scheduleTask("Dash", MovementConstants.AirDashDuration, function()
 								if fsm.CurrentState == MovementStateDefs.AirDashing then
-									local fallSuccess = fsm:transition(MovementStateDefs.Falling)
-									if fallSuccess then
-										MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.Falling })
-									end
+									endAirborneStateToFalling()
 								end
 							end)
 						end
@@ -648,6 +668,7 @@ function ClientMovementState.start()
 
 			renderConn:Disconnect()
 			correctionConnection:Disconnect()
+			humanoidStateConnection:Disconnect()
 			ContextActionService:UnbindAction("ToggleCrouch")
 			ContextActionService:UnbindAction("ToggleRun")
 			ContextActionService:UnbindAction("TriggerDash")

@@ -40,13 +40,21 @@ local ANIMATION_IDS = {
 	DoubleJump1 = "rbxassetid://105731615843957",
 	DoubleJump2 = "rbxassetid://109908788558574",
 
+	-- Second TreeStanding land pose, randomly picked 50/50 against MovementStateDefs.TreeStanding's
+	-- own entry above, same "DoubleJump1/DoubleJump2" pattern.
+	TreeStanding2 = "rbxassetid://114060022362060", -- placeholder; swap in your second TreeStanding land animation
+	-- One-shot overlay played periodically while resting in TreeStanding (see startTreeIdleFidget
+	-- below) — small head-movement fidget, layered on TOP of the looping base pose the same way
+	-- WallLatch layers on top of WallHanging.
+	TreeIdleFidget = "rbxassetid://105547805956367", -- placeholder; swap in your head-movement idle fidget animation
+
 	-- Directional Walk Animations (8-way) 
 	WalkForward = "rbxassetid://94798501873440",
 	WalkFrontRight = "rbxassetid://111875231717111",
 	WalkRight = "rbxassetid://138304500693640",
-	WalkBackRight = "rbxassetid://121566991335888",
+	WalkBackRight = "rbxassetid://116024697647581",
 	WalkBack = "rbxassetid://128844989818445",
-	WalkBackLeft = "rbxassetid://116024697647581",
+	WalkBackLeft = "rbxassetid://121566991335888",
 	WalkLeft = "rbxassetid://105611688611402",
 	WalkFrontLeft = "rbxassetid://129685547745709",
 }
@@ -106,14 +114,14 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 		local track = animator:LoadAnimation(anim)
 
 		-- Only loop tracks that aren't jumps, boosts, impacts, or air dashes!
-		if stateName == MovementStateDefs.Jumping or stateName == "DoubleJump1" or stateName == "DoubleJump2" or stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.AirDashing or stateName == MovementStateDefs.WallBoost or stateName == MovementStateDefs.WallClingDoubleJump or stateName == "WallLatch" or stateName == "WallLeapLeft" or stateName == "WallLeapRight" or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding or stateName == MovementStateDefs.TreeJumping or stateName == MovementStateDefs.TreeLaunching then
+		if stateName == MovementStateDefs.Jumping or stateName == "DoubleJump1" or stateName == "DoubleJump2" or stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.AirDashing or stateName == MovementStateDefs.WallBoost or stateName == MovementStateDefs.WallClingDoubleJump or stateName == "WallLatch" or stateName == "WallLeapLeft" or stateName == "WallLeapRight" or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding or stateName == MovementStateDefs.TreeJumping or stateName == MovementStateDefs.TreeLaunching or stateName == "TreeIdleFidget" then
 			track.Looped = false
 		else
 			track.Looped = true
 		end
 
 		-- Force Priorities to avoid Roblox default script bleeding
-		if stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding or stateName == MovementStateDefs.AirDashing or stateName == MovementStateDefs.WallClingDoubleJump or stateName == MovementStateDefs.TreeJumping or stateName == MovementStateDefs.TreeLaunching then
+		if stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding or stateName == MovementStateDefs.AirDashing or stateName == MovementStateDefs.WallClingDoubleJump or stateName == MovementStateDefs.TreeJumping or stateName == MovementStateDefs.TreeLaunching or stateName == "TreeIdleFidget" then
 			track.Priority = Enum.AnimationPriority.Action
 		else
 			-- Forces standard movement (Walk/Run/Idle) to dominate Roblox defaults
@@ -160,6 +168,16 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 		if oldState == MovementStateDefs.WallRunning then
 			if loadedTracks.WallRunLeft then loadedTracks.WallRunLeft:Stop(0.1) end
 			if loadedTracks.WallRunRight then loadedTracks.WallRunRight:Stop(0.1) end
+		end
+
+		-- Specifically clean up TreeStanding's second land-pose option and the idle fidget
+		-- overlay when we leave early. loadedTracks[oldState] above only ever targets the FIRST
+		-- of the two randomly-picked poses (MovementStateDefs.TreeStanding itself); TreeStanding2
+		-- needs its own stop if that was the one actually chosen. The fidget is a separate
+		-- layered one-shot that can be mid-playback (e.g. launching off mid-head-turn).
+		if oldState == MovementStateDefs.TreeStanding then
+			if loadedTracks.TreeStanding2 then loadedTracks.TreeStanding2:Stop(0.1) end
+			if loadedTracks.TreeIdleFidget then loadedTracks.TreeIdleFidget:Stop(0.1) end
 		end
 
 		-- Directional walking only runs while actually in Walking — kill the MoveDirection
@@ -235,6 +253,47 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 		end
 	end
 
+	-- Same 50/50 random pick as playDoubleJumping, just between MovementStateDefs.TreeStanding
+	-- and its TreeStanding2 counterpart — stopOldState above handles cleaning up whichever one
+	-- was actually chosen once TreeStanding ends.
+	local function playTreeStanding()
+		local trackName = math.random(1, 2) == 1 and MovementStateDefs.TreeStanding or "TreeStanding2"
+		local track = loadedTracks[trackName]
+		if track then
+			track:Play(0.1)
+		end
+	end
+
+	-- Periodic idle fidget while resting in TreeStanding: a small head-movement one-shot, layered
+	-- on top of the looping base pose the same way playWallHanging layers WallLatch on top of
+	-- WallHanging. Self-reschedules via task.delay (Luau has no repeating-interval primitive) —
+	-- tracked in treeIdleFidgetTask so a state change out of TreeStanding can task.cancel it
+	-- instead of leaving an orphaned timer chain running forever against a character that's since
+	-- moved on, per the guide's GC-defense rule.
+	local treeIdleFidgetTask = nil
+
+	local function stopTreeIdleFidget()
+		if treeIdleFidgetTask then
+			task.cancel(treeIdleFidgetTask)
+			treeIdleFidgetTask = nil
+		end
+	end
+
+	local function startTreeIdleFidget()
+		stopTreeIdleFidget() -- guard against double-starting if this somehow fires twice in a row
+
+		local function scheduleNext()
+			treeIdleFidgetTask = task.delay(MovementConstants.TreeIdleFidgetInterval, function()
+				local fidgetTrack = loadedTracks.TreeIdleFidget
+				if fidgetTrack then
+					fidgetTrack:Play(0.15)
+				end
+				scheduleNext()
+			end)
+		end
+		scheduleNext()
+	end
+
 	-- Swaps between 8 directional walk tracks based on camera-relative input, instead of a
 	-- single generic walk loop. angle is measured from the character's forward axis: 0 = dead
 	-- ahead, +90 = strafing right, ±180 = walking backward. Bucketed into eight 45-degree wedges.
@@ -292,6 +351,7 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 		[MovementStateDefs.WallLeaping] = playWallLeaping,
 		[MovementStateDefs.DoubleJumping] = playDoubleJumping,
 		[MovementStateDefs.Walking] = playWalking,
+		[MovementStateDefs.TreeStanding] = playTreeStanding,
 	}
 
 	fsmConnection = fsm.StateChanged:Connect(function(oldState, newState)
@@ -302,6 +362,12 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 			handler()
 		else
 			playDefault(newState)
+		end
+
+		if newState == MovementStateDefs.TreeStanding then
+			startTreeIdleFidget()
+		elseif oldState == MovementStateDefs.TreeStanding then
+			stopTreeIdleFidget()
 		end
 	end)
 
@@ -353,6 +419,7 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 		if renderConnection then renderConnection:Disconnect() end
 		if walkDirectionConnection then walkDirectionConnection:Disconnect() end
 		if ancestryConnection then ancestryConnection:Disconnect() end
+		stopTreeIdleFidget()
 
 		for _, track in pairs(loadedTracks) do
 			track:Stop()

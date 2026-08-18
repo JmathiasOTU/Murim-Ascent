@@ -44,11 +44,11 @@ local MovementConstants = {
 	WallClingDuration = 1.4, -- seconds you can hang before auto-releasing into Falling if you never jump off
 	WallClingSlideAcceleration = 8, -- studs/sec^2; how fast the downward slide picks up speed while clinging
 	WallClingMaxSlideSpeed = 25, -- studs/sec cap on the downward slide so a long hang doesn't run away
-	WallJumpMaxUses = 3, -- how many WallBoosts can be chained before touching ground resets the count
+	WallJumpMaxUses = 5, -- how many WallBoosts can be chained before touching ground resets the count
 	WallClingDoubleJumpVelocity = 85, -- small recovery hop off a WallBoost; weaker than DoubleJumpVelocity on purpose
 	WallClingDoubleJumpDuration = 0.5,
-	WallClingDoubleJumpWindow = 1, -- seconds after a WallBoost the recovery hop stays available before expiring on its own
-	WallClingDetectionRange = 4, -- studs; forward reach of the grab/still-clinging raycasts (was hardcoded at 3, felt too strict)
+	WallClingDoubleJumpWindow = 1.5, -- seconds after a WallBoost the recovery hop stays available before expiring on its own
+	WallClingDetectionRange = 5, -- studs; forward reach of the grab/still-clinging raycasts (was hardcoded at 3, felt too strict)
 
 	-- Tree Jumping (Naruto-style bounce off tagged tree trunks — deliberate, screen-aimed, no chain cap)
 	-- The transit is a driven parabolic arc from launch position to the exact target position
@@ -64,6 +64,7 @@ local MovementConstants = {
 	TreeJumpArcHeight = 10, -- studs the transit bulges above the straight line between launch and target, at the arc's midpoint
 	TreeJumpFallbackForwardPower = 100, -- one-shot impulse used only when no target was found (e.g. it vanished between the entry check and the physics handler running) — a plain forward hop so the input isn't silently eaten
 	TreeJumpFallbackUpwardPower = 70,
+	TreeJumpCollisionRestoreBuffer = 0.1, -- seconds MovementPhysicsController's handleTreeJumping waits past its own computed duration before re-enabling the character's collision. ClientMovementState independently re-derives the same target/duration to drive its own TreeJumping -> TreeStanding transition (deliberate decoupling, not a shared value) — that recomputation can land a frame or two off from this module's, and without this buffer, collision can come back mid-race, letting a real Landed event fire and kick the FSM into Idle/Walking before the FSM's own timer gets a chance to land it in TreeStanding
 
 	-- Tree Standing / Launching (resting on the branch, then a camera-aimed launch off it — mirrors
 	-- WallHanging -> WallBoost, but facing is driven by the camera instead of a fixed away-from-wall direction)
@@ -71,6 +72,7 @@ local MovementConstants = {
 	TreeLaunchBaseUpward = 100, -- guaranteed vertical pop regardless of camera pitch, so looking dead ahead still launches you with real height instead of relying entirely on aim; matches TreeLaunchSpeed so the base arc isn't a flat skim (100 only gave ~25 studs of peak height against 170 studs/sec forward, which read as basically nothing)
 	TreeLaunchVerticalSpeed = 60, -- max additional studs/sec pitch alone can add (looking up) or subtract (looking down) on top of the base — decoupled from TreeLaunchSpeed so tuning forward speed can't blow this out too. Now that TreeLaunchBaseUpward alone gives a real launch, this only needs to add a noticeable boost looking up, not double the height (150 stacked on top of the raised base sent you flying)
 	TreeLaunchDuration = 1.0, -- seconds the FSM stays in TreeLaunching before dropping into Falling
+	TreeIdleFidgetInterval = 7, -- seconds between each replay of the small head-movement idle fidget while resting in TreeStanding
 	TreeLaunchGhostDuration = 0.6, -- seconds the character ignores collision right at launch, so it can't clip on the branch/trunk (or the leaf canopy above it) it's launching from — the collision resumes before Falling really settles in, so this can't be pushed arbitrarily high without risking a fall-through-the-floor window; raise it further only if trees still have canopy tall enough to clip past this
 
 	-- Wall Leaping
@@ -87,6 +89,7 @@ local MovementConstants = {
 	LedgeJumpEdgeCheckDown = 5,
 	LedgeJumpUpPower = 95,
 	LedgeJumpForwardPower = 120,
+	LedgeJumpServerEdgeCheckForward = 15, -- more forgiving than the client's own LedgeJumpEdgeCheckForward, same reason WallProximityCheckDistance is more generous than WallSideRayDistance: the server's replicated hrp.Position can lag behind where the client visually is, so matching the client's razor-thin check exactly rejects legitimate ledge jumps
 
 	-- Landing
 	HeavyFallTimeThreshold = 1.5, -- seconds of continuous falling before a landing counts as Heavy. At default gravity (~196 studs/s^2) this is roughly a 40-stud drop; the old 1.5s required a ~220-stud drop to ever trigger, which is why Heavy never fired in practice
@@ -114,6 +117,26 @@ local MovementConstants = {
 	CameraLandingDipHoldTime = 0.12, -- brief hold at the bottom of the dip before recovering, so the impact reads before it eases back
 	CameraLandingDipAttackSpeed = 16, -- fast ease into the dip, selling the impact
 	CameraLandingDipRecoverySpeed = 5, -- slower ease back to neutral, matching CameraLeanSpeed's smoothness
+
+	-- Camera FOV Punch (procedural quick zoom-in on a launch, then release — same impulse shape as
+	-- the impact dip above, just on FOV instead of vertical offset, and additive on top of whatever
+	-- SprintFovBoost is already doing)
+	CameraTreeLaunchFovPunch = 9, -- degrees punched in on TreeLaunching's launch; kept small since TreeLaunchBaseUpward/TreeLaunchSpeed already sell the payoff through the actual launch arc, not the camera punch
+
+	-- Camera Tree-Jump Zoom Out (procedural FOV widen held for the whole TreeJumping transit — same
+	-- "target + exponential chase" shape as SprintFovBoost below, not a one-shot punch, since this
+	-- needs to read through the entire mid-air flight, not just the launch instant)
+	CameraTreeJumpZoomOut = 60, -- degrees added to FOV while TreeJumping is active; tune this directly to taste
+	CameraTreeJumpZoomSpeed = 12, -- smoothing rate for both zooming out and returning to normal on landing
+
+	-- Camera Blur (procedural screen blur while TreeJumping, held for the whole transit like the
+	-- crouch offset above, not a one-shot impulse like the dip/punch — sells the speed of the
+	-- transit and eases the character-hide/show pop at either end)
+	CameraTreeJumpBlurSize = 8, -- BlurEffect.Size (studs of blur radius, Roblox's own unit); tune this directly to taste
+	CameraTreeJumpBlurSpeed = 10, -- smoothing rate for both blurring in and clearing back out
+	CameraFovPunchHoldTime = 0.08, -- brief hold at full punch before releasing, so the hit actually reads
+	CameraFovPunchAttackSpeed = 25, -- very fast snap in, selling the impact
+	CameraFovPunchRecoverySpeed = 6, -- smooth ease back out, matching the impact dip's recovery feel
 
 	-- Camera Crouch Offset (procedural camera sink while Crouching/CrouchWalking — held for as
 	-- long as the state lasts, not a one-shot impact dip like the above)
@@ -157,6 +180,7 @@ MovementConstants.WalkSpeedExemptStates = {
 	[MovementStateDefs.TreeJumping] = true,
 	[MovementStateDefs.TreeStanding] = true,
 	[MovementStateDefs.TreeLaunching] = true,
+	[MovementStateDefs.LedgeJumping] = true,
 }
 
 -- Helper function to map FSM states to speeds centrally

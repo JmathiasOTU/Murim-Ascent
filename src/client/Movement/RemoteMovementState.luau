@@ -27,6 +27,11 @@ function RemoteMovementState.start()
 	local MovementStateChanged = RemoteRegistry.getEvent("MovementStateChanged")
 
 	local function onCharacterAdded(player, character)
+		local previousFsm = fsmByPlayer[player]
+		if previousFsm then
+			previousFsm:destroy()
+		end
+
 		local fsm = FSM.new(MovementStateDefs.Idle, MovementTransitionTable)
 		fsmByPlayer[player] = fsm
 		RemoteMovementState.FSMReady:Fire(fsm, character)
