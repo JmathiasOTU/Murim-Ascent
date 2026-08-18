@@ -372,11 +372,16 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 			playDefault(newState)
 		end
 
-		if newState == MovementStateDefs.TreeStanding then
-			startTreeIdleFidget()
-		elseif oldState == MovementStateDefs.TreeStanding then
-			stopTreeIdleFidget()
-		end
+		-- Disabled for now: TreeStanding auto-launches after a brief beat
+		-- (MovementConstants.TreeStandBriefPauseDuration) instead of being a real rest stop, so
+		-- this would basically never get a chance to play. Commented out, not deleted, in case
+		-- TreeStanding becomes a rest stop again later — startTreeIdleFidget/stopTreeIdleFidget
+		-- are still fully defined above.
+		-- if newState == MovementStateDefs.TreeStanding then
+		-- 	startTreeIdleFidget()
+		-- elseif oldState == MovementStateDefs.TreeStanding then
+		-- 	stopTreeIdleFidget()
+		-- end
 	end)
 
 	-- 6. Handle Procedural Rig Manipulation (Leaning) — local player only, see includeLean above

@@ -220,6 +220,33 @@ function ClientMovementState.start()
 			end
 		end
 
+		-- Fires the camera-aimed launch off the branch. Shared by the manual Space press while
+		-- TreeStanding and by attemptTreeJump's own automatic touch-down-then-launch below, so both
+		-- share the exact same transition/timer logic instead of drifting if only one call site
+		-- gets updated later. Declared ahead of attemptTreeJump so its scheduled callback can close
+		-- over this local.
+		local function attemptTreeLaunch()
+			local success = fsm:transition(MovementStateDefs.TreeLaunching)
+			if not success then
+				return false
+			end
+
+			MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.TreeLaunching })
+
+			scheduleTask("TreeLaunch", MovementConstants.TreeLaunchDuration, function()
+				if fsm.CurrentState == MovementStateDefs.TreeLaunching then
+					-- Fallback safety net: a real Freefall event normally moves TreeLaunching into
+					-- Falling immediately (see the humanoid.StateChanged handler above), and a short/
+					-- flat launch that lands without ever leaving the floor long enough to register
+					-- Freefall is caught by that same handler's Landed/implicit-landing branch. This
+					-- timer only matters if neither of those fired before TreeLaunchDuration elapsed.
+					endAirborneStateToFalling()
+				end
+			end)
+
+			return true
+		end
+
 		-- Attempts a tree-jump transit toward whatever TreeJumpUtils finds in view. Shared by the Y
 		-- keybind's two contexts — starting fresh from Jumping/Falling/WallLeaping, and chaining
 		-- directly to a different tree while already TreeStanding — so both stay in sync on exactly
@@ -257,6 +284,19 @@ function ClientMovementState.start()
 					local standSuccess = fsm:transition(MovementStateDefs.TreeStanding)
 					if standSuccess then
 						MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.TreeStanding })
+
+						-- Manhwa-style tree traversal doesn't pause and perch — TreeStanding is now
+						-- just a brief touch-down beat (landing VFX/SFX/pose) before automatically
+						-- launching back off toward wherever the camera is currently looking, via
+						-- the same attemptTreeLaunch helper the manual Space press uses. Still
+						-- guarded on CurrentState so a manual Y (chain to a different tree) or Space
+						-- (launch early) pressed during that brief window wins over the auto-fire
+						-- instead of double-triggering.
+						scheduleTask("TreeStandAutoLaunch", MovementConstants.TreeStandBriefPauseDuration, function()
+							if fsm.CurrentState == MovementStateDefs.TreeStanding then
+								attemptTreeLaunch()
+							end
+						end)
 					end
 				end
 			end)
@@ -499,22 +539,11 @@ function ClientMovementState.start()
 				end
 
 				if state == MovementStateDefs.TreeStanding then
-					local success = fsm:transition(MovementStateDefs.TreeLaunching)
-					if success then
-						MovementIntent:FireServer("UpdateState", { targetState = MovementStateDefs.TreeLaunching })
-
-						scheduleTask("TreeLaunch", MovementConstants.TreeLaunchDuration, function()
-							if fsm.CurrentState == MovementStateDefs.TreeLaunching then
-								-- A short/flat launch can land well before this fixed timer fires.
-								-- The early landing already tried evaluateState(true) at that
-								-- moment (see the WallLeaping/WallBoost/TreeJumping/TreeLaunching
-								-- guard in the humanoid.StateChanged handler above), but
-								-- TreeLaunching -> Idle/Walking/Running isn't a legal transition,
-								-- so that attempt was a silent no-op and left the FSM sitting here
-								-- waiting for this timer regardless.
-								endAirborneStateToFalling()
-							end
-						end)
+					-- Usually beaten by the automatic auto-fire (see attemptTreeJump's
+					-- TreeStandAutoLaunch timer) since TreeStandBriefPauseDuration is short — this
+					-- is what fires if the player presses Space during that brief window to launch
+					-- early instead of waiting it out.
+					if attemptTreeLaunch() then
 						return Enum.ContextActionResult.Sink
 					end
 				end

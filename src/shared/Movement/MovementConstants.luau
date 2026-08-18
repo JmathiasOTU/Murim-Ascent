@@ -66,14 +66,17 @@ local MovementConstants = {
 	TreeJumpFallbackUpwardPower = 70,
 	TreeJumpCollisionRestoreBuffer = 0.1, -- seconds MovementPhysicsController's handleTreeJumping waits past its own computed duration before re-enabling the character's collision. ClientMovementState independently re-derives the same target/duration to drive its own TreeJumping -> TreeStanding transition (deliberate decoupling, not a shared value) — that recomputation can land a frame or two off from this module's, and without this buffer, collision can come back mid-race, letting a real Landed event fire and kick the FSM into Idle/Walking before the FSM's own timer gets a chance to land it in TreeStanding
 
-	-- Tree Standing / Launching (resting on the branch, then a camera-aimed launch off it — mirrors
-	-- WallHanging -> WallBoost, but facing is driven by the camera instead of a fixed away-from-wall direction)
+	-- Tree Standing / Launching (a brief touch-down on the branch, then an automatic camera-aimed
+	-- launch off it — mirrors WallHanging -> WallBoost, but facing is driven by the camera instead
+	-- of a fixed away-from-wall direction, and the launch fires on its own instead of waiting for a
+	-- Space press: manhwa-style tree traversal keeps moving, it doesn't pause and perch)
 	TreeLaunchSpeed = 170, -- forward component of the launch-off, same role as AirDashSpeed; bigger than a plain air dash since this is meant to be the payoff move
 	TreeLaunchBaseUpward = 100, -- guaranteed vertical pop regardless of camera pitch, so looking dead ahead still launches you with real height instead of relying entirely on aim; matches TreeLaunchSpeed so the base arc isn't a flat skim (100 only gave ~25 studs of peak height against 170 studs/sec forward, which read as basically nothing)
 	TreeLaunchVerticalSpeed = 60, -- max additional studs/sec pitch alone can add (looking up) or subtract (looking down) on top of the base — decoupled from TreeLaunchSpeed so tuning forward speed can't blow this out too. Now that TreeLaunchBaseUpward alone gives a real launch, this only needs to add a noticeable boost looking up, not double the height (150 stacked on top of the raised base sent you flying)
 	TreeLaunchDuration = 1.0, -- seconds the FSM stays in TreeLaunching before dropping into Falling
-	TreeIdleFidgetInterval = 7, -- seconds between each replay of the small head-movement idle fidget while resting in TreeStanding
-	TreeLaunchGhostDuration = 0.6, -- seconds the character ignores collision right at launch, so it can't clip on the branch/trunk (or the leaf canopy above it) it's launching from — the collision resumes before Falling really settles in, so this can't be pushed arbitrarily high without risking a fall-through-the-floor window; raise it further only if trees still have canopy tall enough to clip past this
+	TreeStandBriefPauseDuration = 0.15, -- seconds TreeStanding holds before auto-firing TreeLaunching toward wherever the camera is currently looking; untested starting point, tune to taste — long enough to read as a real touch-down, short enough that it never feels like a stop
+	TreeIdleFidgetInterval = 7, -- seconds between each replay of the small head-movement idle fidget while resting in TreeStanding -- currently unused: TreeStanding auto-launches long before this would ever fire (see TreeStandBriefPauseDuration); left defined in case TreeStanding becomes a real rest stop again later
+	TreeLaunchGhostDuration = 1.0, -- seconds the character ignores collision right at launch, so it can't clip on the branch/trunk (or the leaf canopy above it) it's launching from — the collision resumes before Falling really settles in, so this can't be pushed arbitrarily high without risking a fall-through-the-floor window; raise it further only if trees still have canopy tall enough to clip past this
 
 	-- Wall Leaping
 	WallLeapOutwardPower = 140,
