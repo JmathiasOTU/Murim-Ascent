@@ -7,6 +7,7 @@ local RemoteMovementState = require(script.Parent.Parent.Movement.RemoteMovement
 local MovementStateDefs = require(ReplicatedStorage.Shared.Movement.MovementStates.MovementStateDefs)
 local MovementConstants = require(ReplicatedStorage.Shared.Movement.MovementConstants)
 local RemoteRegistry = require(ReplicatedStorage.Shared.Net.RemoteRegistry)
+local WeaponRegistry = require(ReplicatedStorage.Shared.Combat.Weapons.WeaponRegistry)
 
 local VFXPlaybackController = {}
 local started = false
@@ -16,18 +17,22 @@ local AssetsFolder = ReplicatedStorage:WaitForChild("Assets")
 local VFXFolder = AssetsFolder:WaitForChild("VFX")
 local CombatVFXFolder = VFXFolder:WaitForChild("Combat")
 local MovementVFXFolder = VFXFolder:WaitForChild("Movement")
+local CombatSFXFolder = AssetsFolder:WaitForChild("SFX"):WaitForChild("Combat")
 
--- Array of dictionaries so we can tune the exact start time of each sound
-local PARRY_SOUNDS = {
-	{ id = "rbxassetid://124438514111728", offset = 0.15 }, -- TODO: tune dead-air offset
-	{ id = "rbxassetid://98126623852545", offset = 0.30 }, -- TODO: tune dead-air offset
-	{ id = "rbxassetid://127555742263594", offset = 0 }, -- TODO: tune dead-air offset
-}
-
-local BLOCK_SOUNDS = {
-	{ id = "rbxassetid://71751774673644", offset = 0.30 }, -- TODO: tune dead-air offset
-	{ id = "rbxassetid://123112951688897", offset = 0.11 }, -- TODO: tune dead-air offset
-}
+-- Combat clash/hit SFX are per-weapon (see WeaponTypes.WeaponSFX) rather than one shared global set
+-- — a katana clang shouldn't sound like a bare-knuckle punch. Each weapon's own Sound instances live
+-- under a same-named subfolder of ReplicatedStorage.Assets.SFX.Combat (e.g. SFX.Combat.Fists), listed
+-- by name in that weapon's own Weapons/<Name>.luau (WeaponRegistry[name].SFX.Hit/Parry/Block). Adding
+-- a new weapon's SFX is then just: drop its clips in a matching subfolder, list the names in its
+-- WeaponData. Resolved fresh per event rather than cached — these fire at most a few times a second,
+-- not worth the bookkeeping.
+local function getWeaponSFXFolder(weaponName: string): Instance?
+	local folder = CombatSFXFolder:FindFirstChild(weaponName)
+	if not folder then
+		warn("Missing " .. weaponName .. " in ReplicatedStorage.Assets.SFX.Combat")
+	end
+	return folder
+end
 
 local SPRINT_VFX_FORWARD_OFFSET = 4 -- studs ahead of HumanoidRootPart the wind trail is welded at
 local SPRINT_VFX_NAMES = { "SprintVFX" } -- every prefab cloned/welded while Sprinting
@@ -56,17 +61,18 @@ local SPRINT_VFX_CONTINUATION_STATES = {
 	[MovementStateDefs.Dashing] = true,
 }
 
--- Picks a random sound from the given table, fast-forwards past its dead air, and plays it
-local function playRandomSound(soundTable, parent: Instance)
-	local soundData = soundTable[math.random(1, #soundTable)]
+-- Picks a random NAMED Sound instance out of `folder` and clones it — whatever Volume/RollOff/etc
+-- the instance was already set up with in Studio carries over as-is.
+local function playRandomNamedSound(folder: Instance, names: { string }, parent: Instance)
+	local soundName = names[math.random(1, #names)]
+	local template = folder:FindFirstChild(soundName)
+	if not template then
+		warn("Missing " .. soundName .. " in " .. folder:GetFullName())
+		return
+	end
 
-	local sound = Instance.new("Sound")
-	sound.SoundId = soundData.id
-	sound.Volume = 1
-	sound.RollOffMaxDistance = 80 -- Fades out from 80 studs away
-	sound.RollOffMinDistance = 10
+	local sound = template:Clone()
 	sound.Parent = parent
-	sound.TimePosition = soundData.offset
 	sound:Play()
 end
 
@@ -179,8 +185,14 @@ local function spawnClashSparks(vfxNames, parent: Instance)
 	end
 end
 
--- HELPER 5: React to server-broadcast combat clashes (parry clang + sparks)
-local function onCombatVisual(effectType: string, position: Vector3)
+-- HELPER 5: React to server-broadcast combat clashes (parry clang + sparks). weaponName picks which
+-- weapon's own SFX subfolder to pull from (see getWeaponSFXFolder/WeaponTypes.WeaponSFX) — falls
+-- back to silence (VFX sparks still play) rather than erroring if it's missing/unrecognized, same
+-- "a gap here is a content gap, not a crash" convention as loadTrack/playRandomNamedSound elsewhere.
+local function onCombatVisual(effectType: string, position: Vector3, weaponName: string?)
+	local weaponData = weaponName and WeaponRegistry[weaponName]
+	local weaponSFXFolder = weaponName and getWeaponSFXFolder(weaponName)
+
 	if effectType == "Parry" then
 		-- 1. Create an invisible anchor at the clash position
 		local clashAnchor = Instance.new("Attachment")
@@ -188,7 +200,9 @@ local function onCombatVisual(effectType: string, position: Vector3)
 		clashAnchor.Parent = workspace.Terrain -- Terrain is a great, stable parent for loose attachments
 
 		-- 2. Pick a random sound and play it
-		playRandomSound(PARRY_SOUNDS, clashAnchor)
+		if weaponData and weaponSFXFolder then
+			playRandomNamedSound(weaponSFXFolder, weaponData.SFX.Parry, clashAnchor)
+		end
 
 		-- 3. Clone and Emit the Visual Sparks
 		spawnClashSparks({ "ParryVFX" }, clashAnchor)
@@ -201,10 +215,23 @@ local function onCombatVisual(effectType: string, position: Vector3)
 		clashAnchor.Position = position
 		clashAnchor.Parent = workspace.Terrain
 
-		playRandomSound(BLOCK_SOUNDS, clashAnchor)
+		if weaponData and weaponSFXFolder then
+			playRandomNamedSound(weaponSFXFolder, weaponData.SFX.Block, clashAnchor)
+		end
 
 		-- Both block sparks fire together off the same anchor
 		spawnClashSparks({ "BlockPT1", "BlockPT2" }, clashAnchor)
+
+		Debris:AddItem(clashAnchor, 2)
+
+	elseif effectType == "Hit" then
+		local clashAnchor = Instance.new("Attachment")
+		clashAnchor.Position = position
+		clashAnchor.Parent = workspace.Terrain
+
+		if weaponData and weaponSFXFolder then
+			playRandomNamedSound(weaponSFXFolder, weaponData.SFX.Hit, clashAnchor)
+		end
 
 		Debris:AddItem(clashAnchor, 2)
 	end

@@ -9,8 +9,19 @@ local MovementValidationUtils = require(ReplicatedStorage.Shared.Movement.Moveme
 local TreeTagUtils = require(ReplicatedStorage.Shared.Movement.TreeTagUtils)
 local RemoteRegistry = require(ReplicatedStorage.Shared.Net.RemoteRegistry)
 local MovementStateService = require(script.Parent.MovementStateService)
+local CombatStateService = require(script.Parent.Parent.Combat.CombatStateService)
+local CombatStateDefs = require(ReplicatedStorage.Shared.Combat.CombatStates.CombatStateDefs)
 
 local MovementValidationService = {}
+
+-- Combat states that hard-stun a player (no attacking, blocking, OR moving) — see
+-- CombatConstants.BlockBreakStunTime/ParriedStunTime and ClientCombatState's own
+-- HARD_STUN_DURATIONS, which drives the client-side half of this same lock.
+local HARD_STUN_COMBAT_STATES = {
+	[CombatStateDefs.BlockBreak] = true,
+	[CombatStateDefs.Parried] = true,
+	[CombatStateDefs.Stunned] = true,
+}
 
 -- Store the server's authoritative view of each player's movement data
 local playerProfiles = {}
@@ -186,6 +197,14 @@ local function isRateLimited(profile, now)
 	return profile.intentCount > MovementConstants.MaxMovementIntentsPerSecond
 end
 
+-- Read-only lookup for other services (HitRegistrationService's i-frame check, e.g.) that need to
+-- know a player's server-authoritative movement state without owning it themselves — same role as
+-- CombatStateService.getState plays for combat states.
+function MovementValidationService.getState(player: Player): string?
+	local profile = playerProfiles[player]
+	return profile and profile.currentState
+end
+
 function MovementValidationService.start()
 	local MovementIntent = RemoteRegistry.getEvent("MovementIntent")
 	local MovementStateChanged = RemoteRegistry.getEvent("MovementStateChanged")
@@ -242,6 +261,19 @@ function MovementValidationService.start()
 			local targetState = (data and data.targetState) or (action == "RequestDash" and MovementStateDefs.Dashing)
 			local currentState = profile.currentState
 
+			-- Hard-stun lock (BlockBreak/Parried): a maxed-out posture bar, or landing an attack on a
+			-- Parrying target, locks the player out of every movement ability, not just
+			-- attacking/blocking (see CombatStateService.forceState and HitRegistrationService, which
+			-- is what actually pushes a player into either state). Checked before the transition table
+			-- itself so a modified client can't just skip ClientCombatState's own WalkSpeed/JumpPower
+			-- freeze and Space/Y Sink interceptors by firing MovementIntent directly -- this is the
+			-- real backstop, those are only feel/UX.
+			if HARD_STUN_COMBAT_STATES[CombatStateService.getState(player)] then
+				warn(string.format("[Anti-Exploit] %s attempted a movement transition while hard-stunned.", player.Name))
+				sendCorrection(player, profile, MovementStateChanged)
+				return
+			end
+
 			-- Server-Side FSM Mirroring & Validation
 			local validTransitions = MovementTransitionTable[currentState]
 			if not (validTransitions and validTransitions[targetState]) then
@@ -258,6 +290,18 @@ function MovementValidationService.start()
 					sendCorrection(player, profile, MovementStateChanged)
 					return -- Reject dash, cooldown hasn't finished
 				end
+
+				-- Mid-swing dashing is blocked client-side (ClientCombatState's CombatDashBlock
+				-- intercepts Q while engaged), but dashing now grants real i-frames (see
+				-- HitRegistrationService) — without this mirrored here, a modified client could just
+				-- skip that interception and fire RequestDash directly to farm free invulnerability
+				-- out of any attack at will.
+				if CombatStateService.getState(player) ~= CombatStateDefs.Idle then
+					warn(string.format("[Anti-Exploit] %s attempted to dash out of a mid-swing combat state.", player.Name))
+					sendCorrection(player, profile, MovementStateChanged)
+					return
+				end
+
 				profile.lastDashTime = now
 			end
 

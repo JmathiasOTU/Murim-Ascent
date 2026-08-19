@@ -18,6 +18,12 @@ local TreeJumpUtils = require(script.Parent.TreeJumpUtils)
 local ClientMovementState = {}
 ClientMovementState.FSMReady = LemonSignal.new()
 ClientMovementState.CurrentFSM = nil
+-- Set true right before an early-canceled Dash's forced evaluateState(true) transition fires, so
+-- AnimationController.luau's Dashing-exit handler knows to play a DodgeCancelLeft/Right one-shot
+-- instead of the target state's normal animation — same "plain field read at transition time"
+-- pattern ClientCombatState.AttackType already uses for M1_Windup's animation pick. Consumed
+-- (reset to false) the moment AnimationController reads it, so it never lingers stale.
+ClientMovementState.DodgeCancelled = false
 
 function ClientMovementState.start()
 	local player = Players.LocalPlayer
@@ -693,6 +699,31 @@ function ClientMovementState.start()
 			return Enum.ContextActionResult.Pass
 		end, false, Enum.KeyCode.Q)
 
+		-- DODGE CANCEL — cuts a grounded Dash short (right-click, mid-dash only): ends the dash's
+		-- animation and its i-frames early instead of riding out the full DashDuration, trading
+		-- however much invulnerability was left for getting movement control back sooner. Not
+		-- offered on AirDashing for now (see ClientCombatState's CombatDashBlock/DodgeCancel scoping
+		-- discussion — grounded-only was the deliberate starting scope). Cancels the pending "Dash"
+		-- timer and calls evaluateState(true) directly instead of waiting for it, which both exits
+		-- Dashing immediately (ending server-side i-frames via the normal UpdateState round trip —
+		-- see HitRegistrationService/MovementValidationService, nothing special needed here) and
+		-- resolves straight into whatever real state current input warrants (Idle/Walking/Running/
+		-- Sprinting/etc.), exactly like the natural dash-end already does. DodgeCancelled is read
+		-- (and cleared) by AnimationController.luau the instant it does that, to play the
+		-- DodgeCancelLeft/Right one-shot instead of the target state's normal animation.
+		ContextActionService:BindAction("DodgeCancel", function(_actionName, inputState)
+			if inputState == Enum.UserInputState.Begin and fsm.CurrentState == MovementStateDefs.Dashing then
+				if activeTasks["Dash"] then
+					task.cancel(activeTasks["Dash"])
+					activeTasks["Dash"] = nil
+				end
+
+				ClientMovementState.DodgeCancelled = true
+				evaluateState(true)
+			end
+			return Enum.ContextActionResult.Pass
+		end, false, Enum.UserInputType.MouseButton2)
+
 		-- TREE JUMP — dedicated key (not sharing space's already-overloaded priority chain), usable
 		-- both to start a jump (from Jumping/Falling/WallLeaping) and to chain straight to a
 		-- different tree while already resting on one (TreeStanding), via the same attemptTreeJump
@@ -722,8 +753,10 @@ function ClientMovementState.start()
 			ContextActionService:UnbindAction("ToggleCrouch")
 			ContextActionService:UnbindAction("ToggleRun")
 			ContextActionService:UnbindAction("TriggerDash")
+			ContextActionService:UnbindAction("DodgeCancel")
 			ContextActionService:UnbindAction("ParkourSpacebar")
 			ContextActionService:UnbindAction("TreeJump")
+			ClientMovementState.DodgeCancelled = false
 
 			-- Clean up all managed threads safely
 			for _, t in pairs(activeTasks) do

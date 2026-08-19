@@ -3,6 +3,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Debris = game:GetService("Debris")
 
 local ClientMovementState = require(script.Parent.Parent.Movement.ClientMovementState)
+local ClientCombatState = require(script.Parent.Parent.Combat.ClientCombatState)
 local MovementStateDefs = require(ReplicatedStorage.Shared.Movement.MovementStates.MovementStateDefs)
 local FootstepSoundData = require(script.Parent.FootstepSoundData)
 
@@ -88,6 +89,12 @@ function FootstepController.start()
 		local function processFootsteps()
 			-- Guard against tiny analog stick deadzones
 			if humanoid.MoveDirection.Magnitude <= 0.1 then return end
+
+			-- The movement FSM stays in Running for the whole RunningAttack swing (only the combat
+			-- side root-locks actual velocity — see ClientCombatState.performRunningAttackDash), so
+			-- without this, held Run+Forward keeps ticking out footstep SFX/VFX at the normal cadence
+			-- while the character is visibly stuck in place mid-swing.
+			if ClientCombatState.MovementLocked then return end
 
 			local now = os.clock()
 

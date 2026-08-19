@@ -67,6 +67,15 @@ local DASH_ANIMATION_IDS = {
 	DashRight = "rbxassetid://109325396920599",
 }
 
+-- Played instead of the target state's normal animation when a Dash is cut short via DodgeCancel
+-- (right-click mid-dash — see ClientMovementState's DodgeCancel binding). Only two clips exist;
+-- Front/Back cancels reuse one of these two picked at random (see classifyMoveDirection below) —
+-- deliberate, not a placeholder gap, per how the feature was scoped.
+local DODGE_CANCEL_ANIMATION_IDS = {
+	DodgeCancelLeft = "rbxassetid://133915887345026", -- placeholder; swap in the real DodgeCancelLeft animation ID
+	DodgeCancelRight = "rbxassetid://84186527862482", -- placeholder; swap in the real DodgeCancelRight animation ID
+}
+
 -- Lean Constants
 local MAX_LEAN_STRAFE = math.rad(MovementConstants.LeanMaxAngleDegrees)
 local MAX_LEAN_FORWARD = math.rad(MovementConstants.LeanMaxAngleDegrees)
@@ -131,8 +140,18 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 		loadedTracks[stateName] = track
 	end
 
-	-- 4. Preload Dash Tracks (Ensure these DO NOT loop)
+	-- 4. Preload Dash Tracks (Ensure these DO NOT loop) — DodgeCancel clips share the same table
+	-- (and therefore the same stopOldState sweep + final cleanup below) since they're the same
+	-- family of short, one-shot, Action-priority dash-related overlays.
 	for dirName, animId in pairs(DASH_ANIMATION_IDS) do
+		local anim = Instance.new("Animation")
+		anim.AnimationId = animId
+		local track = animator:LoadAnimation(anim)
+		track.Looped = false
+		track.Priority = Enum.AnimationPriority.Action
+		loadedDashTracks[dirName] = track
+	end
+	for dirName, animId in pairs(DODGE_CANCEL_ANIMATION_IDS) do
 		local anim = Instance.new("Animation")
 		anim.AnimationId = animId
 		local track = animator:LoadAnimation(anim)
@@ -145,12 +164,58 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 		loadedTracks[fsm.CurrentState]:Play()
 	end
 
+	-- Shared by playDashing (which direction did the dash launch in) and the DodgeCancel handler
+	-- below (which direction to cancel out toward) — same camera/facing-relative classification
+	-- either way, just used to pick between a different pair of clips.
+	local function classifyMoveDirection(moveVector: Vector3): string
+		if moveVector.Magnitude <= 0.1 then
+			return "Back"
+		end
+
+		local rightDot = moveVector:Dot(hrp.CFrame.RightVector)
+		local forwardDot = moveVector:Dot(hrp.CFrame.LookVector)
+
+		if math.abs(forwardDot) > math.abs(rightDot) then
+			return forwardDot > 0 and "Front" or "Back"
+		end
+		return rightDot > 0 and "Right" or "Left"
+	end
+
 	-- 5. Handle State Transitions
 	local function stopOldState(oldState, newState)
 		-- ALWAYS STOP THE OLD STATE FIRST
 		if oldState == MovementStateDefs.Dashing then
 			for _, track in pairs(loadedDashTracks) do
 				if track.IsPlaying then track:Stop(0.2) end
+			end
+
+			-- DodgeCancel: only two clips exist (Left/Right), so a Front/Back-classified cancel
+			-- picks between them at random — same "doesn't matter which" 50/50 pattern
+			-- playDoubleJumping/playTreeStanding already use elsewhere in this file. Read off
+			-- current input at the moment of cancellation, not whatever direction the dash
+			-- originally launched in — feels more responsive since you're canceling INTO wherever
+			-- you're steering now, not replaying the dash's stale original heading.
+			--
+			-- includeLean-gated: ClientMovementState.DodgeCancelled only ever reflects the LOCAL
+			-- player's own input, but this function also runs once per remote player (includeLean
+			-- false, driven by RemoteMovementState.FSMReady) to animate everyone else's characters —
+			-- without this guard, a remote player's Dashing ending naturally could get misread as
+			-- THIS client's own dodge cancel if the timing happened to line up. Remote players just
+			-- play their normal dash-end animation for now; replicating dodge cancel's animation to
+			-- observers isn't wired up yet.
+			if includeLean and ClientMovementState.DodgeCancelled then
+				ClientMovementState.DodgeCancelled = false
+
+				local direction = classifyMoveDirection(humanoid.MoveDirection)
+				local cancelTrackName = if direction == "Left" then "DodgeCancelLeft"
+					elseif direction == "Right" then "DodgeCancelRight"
+					elseif math.random(1, 2) == 1 then "DodgeCancelLeft"
+					else "DodgeCancelRight"
+
+				local cancelTrack = loadedDashTracks[cancelTrackName]
+				if cancelTrack then
+					cancelTrack:Play(0.05)
+				end
 			end
 		elseif loadedTracks[oldState] then
 			-- Do not instantly stop the Jump, LedgeJump, or TreeLaunch animation if transitioning
@@ -200,19 +265,7 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 	end
 
 	local function playDashing()
-		local moveVector = humanoid.MoveDirection
-		local dashAnimName = "DashBack" -- Default
-
-		if moveVector.Magnitude > 0.1 then
-			local rightDot = moveVector:Dot(hrp.CFrame.RightVector)
-			local forwardDot = moveVector:Dot(hrp.CFrame.LookVector)
-
-			if math.abs(forwardDot) > math.abs(rightDot) then
-				dashAnimName = forwardDot > 0 and "DashFront" or "DashBack"
-			else
-				dashAnimName = rightDot > 0 and "DashRight" or "DashLeft"
-			end
-		end
+		local dashAnimName = "Dash" .. classifyMoveDirection(humanoid.MoveDirection)
 
 		local trackToPlay = loadedDashTracks[dashAnimName]
 		if trackToPlay then

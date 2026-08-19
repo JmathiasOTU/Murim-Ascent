@@ -2,9 +2,9 @@ local MovementStateDefs = require(script.Parent.MovementStates.MovementStateDefs
 
 local MovementConstants = {
 	-- Core Ground Movement
-	WalkSpeed = 8,
-	RunSpeed = 20,
-	SprintSpeed = 35,
+	WalkSpeed = 15,
+	RunSpeed = 25,
+	SprintSpeed = 40,
 	CrouchSpeed = 6,
 	JumpPower = 50,
 	WalkThreshold = 0.1,
