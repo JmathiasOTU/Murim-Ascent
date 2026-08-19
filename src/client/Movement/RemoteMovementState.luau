@@ -1,9 +1,6 @@
--- Mirrors ClientMovementState.luau but for every player EXCEPT the local one. The server
--- broadcasts validated transitions over the MovementStateChanged remote; this module replays
--- them into a real per-player FSM so AnimationController/VFXPlaybackController can drive
--- everyone else's Qinggong animations and VFX with the exact same logic they use locally.
--- Deliberately does NOT drive physics — remote characters' positions already replicate via the
--- engine from their owning client, so re-simulating LinearVelocity here would fight that.
+-- Mirrors ClientMovementState.luau but for every player except the local one, replaying
+-- server-broadcast transitions into a real per-player FSM. Doesn't drive physics — remote
+-- characters already replicate positions via the engine.
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 

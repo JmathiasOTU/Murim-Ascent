@@ -35,7 +35,6 @@ function MovementPhysicsController.start()
 			activeTween, steerConnection = nil, nil
 		end
 
-		-- 1. DASHING AND SLIDING PHYSICS
 		local function setupGroundConstraint()
 			cleanupDash()
 			VelocityConstraintUtils.activate(constraintPool, GROUND_LOCK_FORCE)
@@ -47,15 +46,9 @@ function MovementPhysicsController.start()
 			local speedValue = Instance.new("NumberValue")
 			speedValue.Value = MovementConstants.DashPower
 
-			-- Decay back to whatever ground speed we were already carrying (walk/run/sprint)
-			-- instead of always bleeding down to WalkSpeed — Dashing doesn't touch
-			-- humanoid.WalkSpeed itself, so it still reflects the state we dashed out of.
+			-- Decays to whatever ground speed we were carrying (walk/run/sprint), not always WalkSpeed.
 			local targetEndSpeed = humanoid.WalkSpeed
 
-			-- Re-reads direction every frame (held input, or a backward dodge off current facing
-			-- when nothing's held) instead of locking it in at launch, so turning the camera in
-			-- shift-lock curves the dash instead of leaving it committed to whatever heading Q
-			-- was pressed on.
 			steerConnection = RunService.Heartbeat:Connect(function()
 				if not constraintPool.velocity.Enabled then return end
 
@@ -100,7 +93,6 @@ function MovementPhysicsController.start()
 			activeTween:Play()
 		end
 
-		-- 2. WALL QINGGONG PHYSICS (Stuck to wall)
 		local function setupWallConstraint()
 			cleanupDash()
 			humanoid.AutoRotate = false
@@ -110,9 +102,7 @@ function MovementPhysicsController.start()
 		local function handleWallHanging()
 			setupWallConstraint()
 
-			-- Not a frozen hang — grip slowly loses to gravity the longer you hang, mirroring the
-			-- reference cling: slide speed ramps up from a standstill instead of holding flat until
-			-- WallClingDuration cuts it off outright.
+			-- Grip slowly loses to gravity the longer you hang, ramping from a standstill.
 			local hangStartTime = os.clock()
 			steerConnection = RunService.Heartbeat:Connect(function()
 				if not constraintPool.velocity.Enabled then return end
@@ -124,13 +114,10 @@ function MovementPhysicsController.start()
 		end
 
 		local function handleWallBoost()
-			-- A launch, not a sustained push: kick away from the wall and up, then let normal
-			-- gravity/air control take over exactly like a double jump does.
 			cleanupDash()
 			humanoid.AutoRotate = true
 
-			-- WallHanging orients us to face INTO the wall (see ParkourRaycastUtils.checkWallCling),
-			-- so "away from the wall" is the opposite of our current LookVector.
+			-- WallHanging orients us INTO the wall, so "away" is the opposite of current LookVector.
 			local awayFromWall = -hrp.CFrame.LookVector
 			local launchVelocity = (awayFromWall * MovementConstants.WallBoostBackPower) + Vector3.new(0, MovementConstants.WallBoostPower, 0)
 			hrp.AssemblyLinearVelocity = launchVelocity
@@ -146,9 +133,7 @@ function MovementPhysicsController.start()
 			setupWallConstraint()
 			VelocityConstraintUtils.enableOrientationTracking(constraintPool, MovementConstants.WallRunTurnResponsiveness)
 
-			-- Throttled to ParkourTickRate (~30/s) instead of raycasting every physics step —
-			-- the wall surface doesn't change fast enough to need higher precision here, and this
-			-- runs for up to WallRunDuration seconds straight while the ability is active
+			-- Throttled to ParkourTickRate instead of raycasting every physics step.
 			local rayAccumulator = 0
 			local cachedHit = sampleWallRunHit()
 
@@ -176,7 +161,6 @@ function MovementPhysicsController.start()
 			end)
 		end
 
-		-- 3. WALL LEAPING (The Slingshot Method)
 		local function handleWallLeaping()
 			cleanupDash()
 			humanoid.AutoRotate = true
@@ -200,7 +184,6 @@ function MovementPhysicsController.start()
 			end)
 		end
 
-		-- 3.5 AIR DASHING (One-shot momentum burst)
 		local function handleAirDashing()
 			cleanupDash()
 			humanoid.AutoRotate = true
@@ -224,7 +207,6 @@ function MovementPhysicsController.start()
 			hrp.AssemblyLinearVelocity = launchVel
 		end
 
-		-- 3.7 LEDGE JUMPING (Slide Jump Boost)
 		local function handleLedgeJumping()
 			cleanupDash()
 			humanoid.AutoRotate = true
@@ -236,20 +218,13 @@ function MovementPhysicsController.start()
 			hrp.AssemblyLinearVelocity = launchVel
 		end
 
-		-- 3.6 TREE JUMPING (Naruto-style bounce off a tagged tree trunk)
 		local function handleTreeJumping()
-			-- Re-finds the target independently rather than receiving it from
-			-- ClientMovementState's entry check — same "each module re-derives what it needs from
-			-- world state" pattern handleWallLeaping/handleLedgeJumping already use, so this module
-			-- never depends on another controller's internal state.
 			local camera = workspace.CurrentCamera
 			local targetInstance = camera and TreeJumpUtils.findTarget(camera, hrp, character)
 			local targetPosition = targetInstance and TreeJumpUtils.getLandingSurfacePosition(targetInstance, camera)
 
 			if not targetPosition then
-				-- Target vanished in the instant between the entry check and this handler running
-				-- (same-frame edge case) — a plain forward hop so the input isn't silently eaten,
-				-- same shape as a double jump
+				-- Target vanished between the entry check and this handler running: plain forward hop instead of eating the input.
 				cleanupDash()
 				humanoid.AutoRotate = true
 				local launchVel = (hrp.CFrame.LookVector * MovementConstants.TreeJumpFallbackForwardPower) + Vector3.new(0, MovementConstants.TreeJumpFallbackUpwardPower, 0)
@@ -257,34 +232,14 @@ function MovementPhysicsController.start()
 				return
 			end
 
-			-- The arc drives the HumanoidRootPart (torso height) to targetPosition, but
-			-- getLandingSurfacePosition already resolved to the branch's actual top surface — where
-			-- the FEET should land, not the torso — same category of gap HardLandVfx had before it
-			-- started raycasting to the real floor. R6-only per the project's rig policy, so
-			-- HipHeight + half the HRP's own height is the exact, reliable vertical distance from the
-			-- HRP's center down to the feet.
+			-- getLandingSurfacePosition already resolves to the branch's top surface; offset down to the feet (R6-only).
 			targetPosition += Vector3.new(0, humanoid.HipHeight + (hrp.Size.Y / 2), 0)
 
-			-- A driven parabolic arc from launch position to the exact target position, not a
-			-- one-shot velocity impulse — a fixed launch power overshoots close trees and
-			-- undershoots far ones, since it has no notion of how far away the target actually is.
-			-- Steering toward a precomputed curve (same continuous VectorVelocity pattern
-			-- handleWallRunning/handleHeavyLanding already use) guarantees landing exactly on the
-			-- tree by construction: the curve's own endpoint IS the target.
+			-- Driven parabolic arc to the exact target, not a one-shot impulse.
 			cleanupDash()
 			humanoid.AutoRotate = true
 
-			-- Approaching a branch from underneath (or through any other geometry en route) can
-			-- otherwise collide with a solid underside and get stuck there — the constraint below
-			-- is a real physics force, not a teleport, so it still respects collision. Ghosting the
-			-- CHARACTER (not the tree) for the transit is what actually fixes this: the tagged
-			-- landing part is only the invisible marker sized to the branch, but the branch's real
-			-- visual mesh is separate, untagged geometry we have no reliable way to identify — so
-			-- toggling collision off on the tree's own parts left that real mesh solid and still
-			-- blocking the ascent. Roblox only collides a pair of parts if BOTH sides are
-			-- CanCollide, so disabling every part on our own side is sufficient to pass through
-			-- everything for the transit; collision is restored the instant it ends, so the
-			-- character resolves normally against whatever it's actually standing/landing on.
+			-- Ghost our own parts (not the tree's) for the transit — Roblox only collides a pair if BOTH sides are CanCollide.
 			local characterParts = {}
 			for _, descendant in ipairs(character:GetDescendants()) do
 				if descendant:IsA("BasePart") then
@@ -318,10 +273,7 @@ function MovementPhysicsController.start()
 
 				local alpha = math.clamp((os.clock() - startTime) / duration, 0, 1)
 
-				-- Analytical derivative of lerp(start, target, alpha) + arc(alpha) with respect to
-				-- time, not a finite-difference (next-position minus current)/dt — that form is
-				-- frame-rate dependent and spikes badly on a slow frame. This is smooth regardless
-				-- of dt and, integrated over the full duration, arrives exactly at targetPosition.
+				-- Analytical derivative of lerp+arc w.r.t. time, not a finite difference — smooth regardless of dt.
 				local linearVelocity = (targetPosition - startPosition) / duration
 				local arcVelocity = (4 * MovementConstants.TreeJumpArcHeight * (1 - 2 * alpha)) / duration
 
@@ -329,85 +281,37 @@ function MovementPhysicsController.start()
 			end)
 
 			task.delay(duration, function()
-				-- Hold exactly at the landed position instead of releasing to free physics.
-				-- Deactivating here left a real gap — until ClientMovementState's own
-				-- independently-scheduled timer fires the FSM transition into TreeStanding — where
-				-- gravity plus the arc's own still-substantial trailing velocity could carry the
-				-- character right off the edge of a small branch before anything caught it. Zeroing
-				-- velocity in place (same generation, same lock) closes that gap completely;
-				-- handleTreeStanding re-applies the same lock a moment later, which is a harmless
-				-- no-op on top of this. Generation-gated so a stale timer from an interrupted jump
-				-- can't stomp on whatever a newer state already did with the constraint.
-				--
-				-- The steering connection above must also be torn down here, not just left to its
-				-- own "if not Enabled" guard — the constraint stays Enabled (that's the whole point
-				-- of holding instead of releasing), so without this the connection keeps running
-				-- every Heartbeat and immediately overwrites the zero we just set with its own
-				-- still-nonzero end-of-arc velocity on the very next frame.
+				-- Hold at the landed position instead of releasing to free physics, so trailing arc
+				-- velocity can't carry the character off a small branch before TreeStanding catches it.
 				if constraintPool.generation == generation then
 					if steerConnection then
 						steerConnection:Disconnect()
 						steerConnection = nil
 					end
-					-- Snap to the exact target instead of trusting wherever the velocity-driven
-					-- arc's physics simulation actually ended up. VectorVelocity integration is
-					-- only mathematically exact, not physically exact — solver timestep variance
-					-- between the Heartbeat-computed velocity and the engine's own physics step can
-					-- leave the real endpoint a few studs off targetPosition, which is what read as
-					-- randomly floating off the branch on some jumps but not others. Keeps the
-					-- character's current rotation (AutoRotate has been steering it all arc).
+					-- Snap to the exact target — VectorVelocity integration can end a few studs off due to solver timestep variance.
 					hrp.CFrame = CFrame.new(targetPosition) * (hrp.CFrame - hrp.CFrame.Position)
 					constraintPool.velocity.VectorVelocity = Vector3.zero
 				end
 			end)
 
-			-- Collision restore is deliberately held back a little past the hold-position moment
-			-- above, not fired in the same callback. ClientMovementState re-derives this same
-			-- target/duration independently to drive its own TreeJumping -> TreeStanding transition
-			-- (the "each module re-derives what it needs" decoupling this handler opened with) —
-			-- that recomputation can resolve a frame or two off from this one, so without a buffer,
-			-- collision could come back while the FSM is still (briefly) in TreeJumping. A real
-			-- Landed event in that window is now a LEGAL transition (TreeJumping permits the ground
-			-- states for the separate no-target-found fallback above), so it would silently kick the
-			-- FSM into Idle/Walking right at the landing spot instead of TreeStanding — not visibly
-			-- broken since the spot is correct either way, but it quietly skips TreeStanding
-			-- (camera-aimed launch-off, chain-jump) every time this race is lost.
 			task.delay(duration + MovementConstants.TreeJumpCollisionRestoreBuffer, restoreCharacterCollision)
 		end
 
-		-- 3.65 TREE STANDING (resting on the branch once TreeJumping's arc finishes — mirrors
-		-- handleWallHanging's constraint setup, but holds a fixed position instead of sliding, since
-		-- this is meant to feel like standing on a stable perch, not clinging to gravity's pull down
-		-- a sheer wall)
 		local function handleTreeStanding()
 			cleanupDash()
-			-- Facing locked while standing, same as WallHanging — the launch-off direction below is
-			-- driven entirely by where the camera is looking, not by character facing, so nothing
-			-- needs AutoRotate to keep turning the rig here.
 			humanoid.AutoRotate = false
 			VelocityConstraintUtils.activate(constraintPool, FULL_LOCK_FORCE)
 			constraintPool.velocity.VectorVelocity = Vector3.zero
 		end
 
-		-- 3.66 TREE LAUNCHING (camera-aimed launch off the branch, space while TreeStanding)
 		local function handleTreeLaunching()
-			-- Unlike handleAirDashing's pure camera-pitch-driven aim (fine there since it's a flat
-			-- mid-air reposition), this is the actual payoff move off the branch — it needs real
-			-- height even when looking dead ahead. TreeLaunchBaseUpward guarantees that; camera
-			-- pitch only adds/subtracts TreeLaunchVerticalSpeed on top of it (decoupled from the
-			-- forward speed entirely), so looking up gives a noticeably higher arc without sending
-			-- you into orbit, and looking down still lets you dive off without a pure-pitch launch's
-			-- all-or-nothing range.
 			cleanupDash()
 			humanoid.AutoRotate = true
 
 			local camera = workspace.CurrentCamera
 			local camLook = camera and camera.CFrame.LookVector or hrp.CFrame.LookVector
 
-			-- Clamped short of true vertical: aiming near straight up/down runs into the camera's
-			-- own gimbal-style flip right at the pole (LookVector.Y briefly reads on the wrong side
-			-- once the camera crosses it), which was intermittently launching the Y axis inverted.
-			-- Never reading a pitch that close to the pole sidesteps the instability entirely.
+			-- Clamped short of vertical to avoid the camera's gimbal flip near the pole.
 			local camPitch = math.clamp(camLook.Y, -0.9, 0.9)
 			local flatLook = camLook * Vector3.new(1, 0, 1)
 			local flatForward = if flatLook.Magnitude > 0.001 then flatLook.Unit else hrp.CFrame.LookVector
@@ -417,11 +321,7 @@ function MovementPhysicsController.start()
 			local upVel = Vector3.new(0, upSpeed, 0)
 			hrp.AssemblyLinearVelocity = forwardVel + upVel
 
-			-- Launching off a branch can clip on the branch/trunk you're launching FROM — same
-			-- "untagged real mesh is still solid" problem TreeJumping's arc had. Unlike that arc
-			-- (fully scripted, safe to ghost the whole transit), this is a normal physics-driven
-			-- jump that needs collision back quickly so gravity can actually land it on something
-			-- — so this only ghosts briefly right at launch, not the whole TreeLaunchDuration.
+			-- Brief ghost right at launch so we don't clip the branch we're launching from.
 			local characterParts = {}
 			for _, descendant in ipairs(character:GetDescendants()) do
 				if descendant:IsA("BasePart") then
@@ -444,7 +344,6 @@ function MovementPhysicsController.start()
 			end)
 		end
 
-		-- 3.75 WALL CLING DOUBLE JUMP (small recovery hop off a WallBoost, not a general air jump)
 		local function handleWallClingDoubleJump()
 			cleanupDash()
 			humanoid.AutoRotate = true
@@ -453,7 +352,6 @@ function MovementPhysicsController.start()
 			hrp.AssemblyLinearVelocity = Vector3.new(currentVel.X, MovementConstants.WallClingDoubleJumpVelocity, currentVel.Z)
 		end
 
-		-- 3.8 DOUBLE JUMPING
 		local function handleDoubleJumping()
 			cleanupDash()
 			humanoid.AutoRotate = true
@@ -462,7 +360,6 @@ function MovementPhysicsController.start()
 			hrp.AssemblyLinearVelocity = Vector3.new(currentVel.X, MovementConstants.DoubleJumpVelocity, currentVel.Z)
 		end
 
-		-- 3.9 HEAVY LANDING
 		local function handleHeavyLanding()
 			cleanupDash()
 			humanoid.AutoRotate = true
@@ -496,12 +393,8 @@ function MovementPhysicsController.start()
 			activeTween:Play()
 		end
 
-		-- 5. EXIT CLEANUP — any state without a dedicated handler above
 		local function handleExit(oldState)
-			-- Dashing decays back to our pre-dash ground speed via tween, but if that speed was
-			-- only WalkSpeed the residual still carries an unwanted trailing slide into normal
-			-- movement — shed most of it here so the dash stops on a dime. Skip the brake while
-			-- still running/sprinting so that momentum carries straight through instead of dipping.
+			-- Shed residual dash velocity so it doesn't trail into normal movement; skip while still running/sprinting.
 			if oldState == MovementStateDefs.Dashing and humanoid.WalkSpeed <= MovementConstants.WalkSpeed then
 				local currentVelocity = hrp.AssemblyLinearVelocity
 				hrp.AssemblyLinearVelocity = Vector3.new(
@@ -511,13 +404,7 @@ function MovementPhysicsController.start()
 				)
 			end
 
-			-- HeavyLanding forces a MINIMUM of HeavyLandMinSpeed (200 studs/s) horizontal velocity
-			-- via a tween that only decays down to WalkSpeed over HeavyLandDuration. Cutting the
-			-- state short (e.g. jump-canceling the recovery) tears the constraint down mid-tween,
-			-- but the velocity it was forcing at that instant doesn't reset — it just becomes real
-			-- velocity, and since jumping only adds a vertical impulse, that launches the player
-			-- horizontally at whatever speed the roll hadn't decayed past yet. Cap it down here so
-			-- an early exit can't inherit an undecayed 200+ stud/s burst.
+			-- Cap undecayed HeavyLanding roll speed so an early exit (jump-cancel) can't inherit a 200+ stud/s burst.
 			if oldState == MovementStateDefs.HeavyLanding then
 				local currentVelocity = hrp.AssemblyLinearVelocity
 				local horizontalVelocity = Vector3.new(currentVelocity.X, 0, currentVelocity.Z)
@@ -531,7 +418,6 @@ function MovementPhysicsController.start()
 			humanoid.AutoRotate = true
 		end
 
-		-- Adding a new Qinggong ability: write its handler above, then register it here
 		local stateHandlers = {
 			[MovementStateDefs.Dashing] = handleDashing,
 			[MovementStateDefs.Sliding] = handleSliding,
@@ -558,8 +444,6 @@ function MovementPhysicsController.start()
 			end
 		end)
 
-		-- Died covers the normal case; AncestryChanged is the fallback for any character removal
-		-- that doesn't go through Humanoid death (resets, hub teleports, etc.)
 		local cleaned = false
 		local function cleanup()
 			if cleaned then return end

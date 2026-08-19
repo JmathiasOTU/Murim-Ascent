@@ -15,16 +15,14 @@ local ClientBootstrap = {}
 function ClientBootstrap.start()
 	print("Client Bootstrap started....")
 
-	-- 1. Initialize the Central State Manager first
 	ClientMovementState.start()
-	RemoteMovementState.start() -- mirrors other players' states so their animations/VFX play too
+	RemoteMovementState.start()
 	ClientCombatState.start()
 
-	-- 2. Initialize the subscribers
 	FootstepController.start()
 	AnimationController.start()
 	CombatAnimationController.start()
-	MovementController.start() -- Your existing procedural lean script
+	MovementController.start()
 	MovementPhysicsController.start()
 	CameraController.start()
 	VFXPlaybackController.start()

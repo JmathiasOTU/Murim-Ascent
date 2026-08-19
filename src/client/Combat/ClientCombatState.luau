@@ -19,10 +19,14 @@ local VelocityConstraintUtils = require(script.Parent.Parent.Movement.VelocityCo
 
 local ClientCombatState = {}
 ClientCombatState.FSMReady = LemonSignal.new() -- fires (fsm, character), same contract as ClientMovementState
+ClientCombatState.EquipChanged = LemonSignal.new() -- fires (isEquipped), read by AnimationController
 ClientCombatState.CurrentFSM = nil
 ClientCombatState.ComboStep = 1 -- which M1 clip/hitbox the current swing is, read by AnimationController
 ClientCombatState.AttackType = "M1" -- "M1" | "RunningAttack" | "AerialAttack", read by AnimationController
-ClientCombatState.MovementLocked = false -- true while performRunningAttackDash/performAerialAttackDive's velocity lock is active; read by FootstepController so steps don't keep firing while root-locked mid-swing
+ClientCombatState.MovementLocked = false -- true during a RunningAttack/AerialAttack velocity lock; read by FootstepController
+-- TEMP debug: press E to test the unarmed state without a real Inventory/Equip system. Fists are
+-- equipped by default so existing testing flow is unchanged unless you toggle it off.
+ClientCombatState.IsEquipped = true
 
 -- TODO: pull from an Inventory/Equip system once one exists
 local EQUIPPED_WEAPON = "Fists"
@@ -36,29 +40,36 @@ local FeintStats = WeaponRegistry[EQUIPPED_WEAPON].FeintStats
 local BlockStats = WeaponRegistry[EQUIPPED_WEAPON].BlockStats
 local ParryStats = WeaponRegistry[EQUIPPED_WEAPON].ParryStats
 
--- BlockBreak, Parried, and Stunned all share the exact same hard-stun shape (see lockMovementForStun
--- below) — can't attack, block, or move — just different durations and triggers, so all three are
--- driven off one lookup instead of near-identical branches. Stunned's entry here is only a fallback
--- default (Stats.StunTime, the base M1's own number) for the rare case forceState somehow arrives
--- with no durationOverride — every real landed hit always passes its own per-attackKind stunTime
--- (see HitRegistrationService), which takes priority via pendingStunDuration below.
+-- BlockBreak/Parried/Stunned share the same hard-stun shape (see lockMovementForStun) — different
+-- durations/triggers, one lookup instead of near-identical branches. Stunned's entry is only a
+-- fallback; every real hit passes its own stunTime via pendingStunDuration below.
 local HARD_STUN_DURATIONS = {
 	[CombatStateDefs.BlockBreak] = CombatConstants.BlockBreakStunTime,
 	[CombatStateDefs.Parried] = CombatConstants.ParriedStunTime,
 	[CombatStateDefs.Stunned] = Stats.StunTime,
 }
 
--- ParryRecovery auto-recovers to Idle after a fixed delay the same way the hard-stun states above
--- do, but deliberately ISN'T one of them — a successful parry shouldn't freeze your movement, only
--- block you from acting again for a beat (same shape as M1_Endlag/Critical_Endlag after a normal
--- swing). Kept as its own lookup rather than folded into HARD_STUN_DURATIONS so the StateChanged
--- handler below knows not to call lockMovementForStun for it.
+-- WalkSpeed pinned during each hard-stun. BlockBreak/Stunned freeze to 0 (the default); Parried
+-- gets its own gentler crawl instead of a full stop.
+local HARD_STUN_WALK_SPEEDS = {
+	[CombatStateDefs.Parried] = CombatConstants.ParriedWalkSpeed,
+}
+
+-- ParryRecovery auto-recovers to Idle like the hard-stuns, but isn't one — movement stays free,
+-- only re-entering an action is blocked. Kept separate so the StateChanged handler doesn't
+-- lockMovementForStun for it.
 local RECOVERY_DURATIONS = {
 	[CombatStateDefs.ParryRecovery] = ParryStats.RecoveryTime,
 }
 
--- Deliberate mobility techniques a swing shouldn't interrupt (and shouldn't start out of) —
--- ordinary locomotion/jump/fall stays swingable, only named traversal abilities are locked out.
+-- Holding guard shares the same WalkSpeed/JumpPower freeze as the hard-stuns, just with no fixed
+-- duration to schedule a revert off of — released by a local transition or a server push instead.
+local GUARD_WALK_LOCK_STATES = {
+	[CombatStateDefs.Parrying] = true,
+	[CombatStateDefs.Blocking] = true,
+}
+
+-- Named traversal abilities a swing shouldn't interrupt or start out of; ordinary WASD/jump/fall stay swingable.
 local MOVEMENT_LOCKED_STATES = {
 	[MovementStateDefs.Dashing] = true,
 	[MovementStateDefs.AirDashing] = true,
@@ -75,7 +86,6 @@ local MOVEMENT_LOCKED_STATES = {
 	[MovementStateDefs.HeavyLanding] = true,
 	[MovementStateDefs.Crouching] = true,
 	[MovementStateDefs.CrouchWalking] = true,
-	
 }
 
 local function isMovementLocked(): boolean
@@ -95,10 +105,8 @@ local function determineAttackType(): string
 	return "M1"
 end
 
--- Restores WalkSpeed to whatever the current MOVEMENT state actually calls for — only ever needed
--- after Blocking capped it down to BlockStats.WalkSpeed, since the movement FSM itself never left
--- Running/Sprinting/etc while blocking (only WalkSpeed was touched, not the state), so there's no
--- natural state-change event to restore off of.
+-- Restores WalkSpeed to whatever the movement state calls for — only needed after Blocking capped
+-- it, since the movement FSM itself never changed state while blocking.
 local function restoreWalkSpeed(humanoid: Humanoid)
 	local movementFSM = ClientMovementState.CurrentFSM
 	local movementState = movementFSM and movementFSM.CurrentState
@@ -108,38 +116,25 @@ local function restoreWalkSpeed(humanoid: Humanoid)
 	end
 end
 
--- BlockBreak/Parried/Stunned's movement freeze, keyed off two Humanoid properties instead of a
--- movement-FSM state (which would need ClientMovementState to know about combat — a circular
--- require, since this file already requires ClientMovementState; see restoreWalkSpeed's own comment
--- for the same tradeoff). Ordinary WASD movement is entirely WalkSpeed-driven, but
--- MovementController.luau's own fsm.StateChanged listener rewrites WalkSpeed independently of
--- anything combat does the instant the movement FSM changes state (e.g. Idle -> Walking just from
--- holding W) — without reconnecting here, that write would silently undo the freeze the moment the
--- stunned player tried to move. Reconnected (not one-shot) for exactly that reason; JumpPower gets
--- the same treatment for symmetry, even though nothing currently rewrites it mid-stun the way
--- WalkSpeed does. `connections` is the calling character's own per-character table (same isolation
--- pattern as activeTasks below), so a respawn can never disconnect the new character's watchers off
--- the old one's cleanup.
---
--- Disconnects any PRIOR watcher for each key before reconnecting — this function can legitimately
--- run twice in a row with no unlockMovementForStun in between (one hard-stun state forceState'd
--- directly into another, e.g. Parried -> Stunned, when a follow-up hit lands on someone still inside
--- their Parried window: the FSM never passes back through Idle, so there's no natural "unlock" point
--- between the two locks). Without this guard, the earlier connection object gets silently overwritten
--- in the table (never disconnected) and leaks forever — still firing, permanently pinning WalkSpeed
--- to 0 even after the real stun ends and unlockMovementForStun disconnects only the NEWER one. That
--- was a real bug: the victim could never walk again through ordinary WASD, only Dash (which drives a
--- LinearVelocity constraint instead of reading WalkSpeed at all) still worked.
-local function lockMovementForStun(humanoid: Humanoid, connections: { [string]: RBXScriptConnection })
-	humanoid.WalkSpeed = 0
-	humanoid.JumpPower = 0
+-- BlockBreak/Parried/Stunned/guard movement freeze, keyed off WalkSpeed/JumpPower with a watcher
+-- (not a movement-FSM state, which would need a circular require with ClientMovementState) —
+-- reconnected every call since MovementController's own StateChanged listener would otherwise
+-- silently undo the freeze the moment the player tries to move. Disconnects any prior watcher
+-- first: this can legitimately run twice in a row with no unlock in between (e.g. Parried ->
+-- Stunned), and an unguarded overwrite used to leak the old connection forever, permanently
+-- pinning WalkSpeed to 0 even after the real stun ended.
+local function lockMovementForStun(humanoid: Humanoid, connections: { [string]: RBXScriptConnection }, lockedWalkSpeed: number?, lockedJumpPower: number?)
+	lockedWalkSpeed = lockedWalkSpeed or 0
+	lockedJumpPower = lockedJumpPower or 0
+	humanoid.WalkSpeed = lockedWalkSpeed
+	humanoid.JumpPower = lockedJumpPower
 
 	if connections.WalkSpeed then
 		connections.WalkSpeed:Disconnect()
 	end
 	connections.WalkSpeed = humanoid:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
-		if humanoid.WalkSpeed ~= 0 then
-			humanoid.WalkSpeed = 0
+		if humanoid.WalkSpeed ~= lockedWalkSpeed then
+			humanoid.WalkSpeed = lockedWalkSpeed
 		end
 	end)
 
@@ -147,8 +142,8 @@ local function lockMovementForStun(humanoid: Humanoid, connections: { [string]: 
 		connections.JumpPower:Disconnect()
 	end
 	connections.JumpPower = humanoid:GetPropertyChangedSignal("JumpPower"):Connect(function()
-		if humanoid.JumpPower ~= 0 then
-			humanoid.JumpPower = 0
+		if humanoid.JumpPower ~= lockedJumpPower then
+			humanoid.JumpPower = lockedJumpPower
 		end
 	end)
 end
@@ -166,10 +161,7 @@ function ClientCombatState.isEngaged(): boolean
 	return ClientCombatState.CurrentFSM ~= nil and ClientCombatState.CurrentFSM.CurrentState ~= CombatStateDefs.Idle
 end
 
--- TEMP debug: traces the actual swept hitbox (size/offset/timing) in real time so it can be
--- visually resynced against the animations. Flip to false to hide. Client-only, purely visual —
--- parented to workspace but never replicated, so it doesn't touch the real detection logic in
--- performHitboxSweep below or become visible to anyone else.
+-- TEMP debug: traces the swept hitbox in real time to resync against animations. Client-only, never replicated.
 local SHOW_HITBOX_DEBUG = true
 
 local function createDebugHitbox(): BasePart
@@ -202,26 +194,20 @@ function ClientCombatState.start()
 		local fsm = FSM.new(CombatStateDefs.Idle, CombatTransitionTable)
 		ClientCombatState.CurrentFSM = fsm
 
-		-- Own pool, separate from Movement's Qinggong ones — same pattern (see
-		-- VelocityConstraintUtils.luau), but combat's forced dashes are a distinct concern.
-		-- maxTorque is unused here since only orientation-tracking states need AlignOrientation.
+		local isEquipped = true
+		ClientCombatState.IsEquipped = true
+
+		-- Own pool, separate from Movement's Qinggong ones.
 		local dashVelocityPool = VelocityConstraintUtils.new(hrp, 0, "CombatDash")
 
-		-- Tracks active delayed threads so a correction/cleanup can cancel a pending callback
-		-- instead of leaking a timer that fires later against stale state (same pattern as
-		-- ClientMovementState's activeTasks).
 		local activeTasks = {}
-		-- BlockBreak/Parried/Stunned's WalkSpeed/JumpPower watcher connections (see
-		-- lockMovementForStun) — scoped per-character like activeTasks above, so a respawn mid-stun
-		-- can't have the old character's cleanup tear down the new character's watchers.
+		-- BlockBreak/Parried/Stunned/guard WalkSpeed+JumpPower watcher connections (see lockMovementForStun).
 		local stunPropertyConnections = {}
-		-- Set by the correction handler right before a forceState(..., durationOverride) call, read
-		-- (and cleared) by the very next StateChanged fire below — the only way to pass a per-hit
-		-- stun length through, since FSM.StateChanged only carries (oldState, newState), no payload.
+		-- Set right before a forceState(..., durationOverride), read/cleared by the next StateChanged
+		-- fire — the only way to pass a per-hit stun length through.
 		local pendingStunDuration: number? = nil
-		-- Set by the correction handler right before every fsm:forceState() call, cleared by the very
-		-- next StateChanged fire — see that fire's own comment for why echoing a forced transition
-		-- back to the server is actively harmful, not just redundant.
+		-- Set right before every fsm:forceState(), cleared by the next StateChanged fire — echoing a
+		-- forced transition back to the server is actively harmful under latency, not just redundant.
 		local suppressNextEcho = false
 		local function scheduleTask(taskName, duration, callback)
 			if activeTasks[taskName] then
@@ -239,75 +225,56 @@ function ClientCombatState.start()
 		local lastCriticalTime = 0
 		local lastRunningAttackTime = 0
 		local lastAerialAttackTime = 0
-		-- release() from whichever movement lock the current swing started (RunningAttack's dash or
-		-- AerialAttack's dive), if any — Feint calls this to cut the lock short instead of letting
-		-- it run its full course when the swing it belongs to gets canceled.
+		-- When the last Parrying window closed with nothing landed, checked against ParryStats.WhiffCooldown.
+		local lastParryWhiffTime = -math.huge
+		-- When the last Feint actually fired, checked against FeintStats.Cooldown so it can't be chained every swing.
+		local lastFeintTime = -math.huge
+		-- release() from the current swing's movement lock, if any — Feint calls this to cut it short.
 		local activeMovementLockRelease: (() -> ())? = nil
-		-- When the current M1_Windup actually started and how long it's supposed to last — feint()
-		-- reads both to enforce WindowFraction (how late into the windup a feint is still legal).
+		-- When the current M1_Windup started and how long it lasts — feint() checks these against WindowFraction.
 		local windupStartTime = 0
 		local currentWindupTime = 0
-		-- Whether F is currently held down, independent of whether Blocking actually started —
-		-- ContextActionService only fires on the key's own Begin/End edges, so pressing F mid-M1
-		-- (correctly rejected, see startParrying below) would otherwise never retry once the swing
-		-- actually resolves back to Idle while F is still held. The Idle branch in the StateChanged
-		-- handler below is what retries it.
+		-- Whether F is held, independent of whether Blocking actually started — retried once a swing
+		-- that rejected Parrying mid-attack resolves back to Idle (see the StateChanged handler below).
 		local isBlockHeld = false
-		-- Forward-declared: assigned its real body further down, but the StateChanged connection
-		-- right below needs to call it and is wired up before that point in the file.
+		-- Forward-declared: the StateChanged connection below needs to call it before its real body is defined.
 		local startParrying
 
 		fsm.StateChanged:Connect(function(oldState, newState)
-			-- Only echo LOCALLY-decided transitions (swing/critical/feint/startParrying/stopBlocking,
-			-- and a recovery timer's own fsm:transition(Idle)) back to the server for validation —
-			-- never one that arrived via fsm:forceState() (BlockBreak/Parried/Stunned/ParryRecovery
-			-- entries, set by the correction handler right below). The server already knows/set those
-			-- states itself; echoing them back used to be merely redundant, but is actively harmful
-			-- under latency: if this client independently sent some OTHER local transition (e.g.
-			-- releasing F mid-Parrying, which looks perfectly legal from the client's own
-			-- not-yet-corrected point of view) that reached the server and got accepted BEFORE this
-			-- now-late forceState echo arrives, echoing the forceState here re-sends a target state
-			-- the server has since moved past — which then gets read as a genuinely illegal transition
-			-- and rejected, spamming Anti-Exploit warnings for what was really just a stale echo, not
-			-- an exploit attempt.
+			-- Only echo LOCALLY-decided transitions to the server — never one that arrived via
+			-- fsm:forceState() (the server already knows/set those). Echoing a forceState under
+			-- latency can re-send a target state the server has since moved past, spamming
+			-- Anti-Exploit warnings for what's really just a stale echo.
 			if suppressNextEcho then
 				suppressNextEcho = false
 			else
 				CombatIntent:FireServer("UpdateState", { targetState = newState })
 			end
 
-			-- BlockBreak/Parried/Stunned are always entered via a server push
-			-- (CombatStateService.forceState — fired on a maxed-out posture bar, your own attack
-			-- landing on a Parrying target, or any unblocked/unparried hit landing on YOU; see
-			-- HitRegistrationService), never something this client decides to enter itself the way
-			-- every other state transition in this file is, so there's no swing()/critical()/etc-style
-			-- function to hang a recovery timer off of. This is that timer, for all three — see
-			-- HARD_STUN_DURATIONS. pendingStunDuration (set by the correction handler right before a
-			-- forceState call) takes priority when present, since Stunned's real duration varies per
-			-- hit (see each weapon's own StunTime fields) rather than being a single fixed constant
-			-- the way BlockBreak/Parried are. Always cleared after reading, hit or not, so it can
-			-- never leak into an unrelated later transition. Also freezes WalkSpeed/JumpPower to 0
-			-- immediately (rather than waiting for the stun to end): all three are meant as a genuine
-			-- "wide open" punishment window, not just a lockout on attacking/blocking, so movement gets
-			-- frozen the same instant the combat FSM does. Blocking's own WalkSpeed cap also has no
-			-- other exit path once the swing that would have cleared it — Blocking's own
-			-- stopBlocking() — got skipped entirely by getting broken/hit instead of releasing
-			-- normally, but lockMovementForStun below overrides that cap with 0 anyway.
+			-- BlockBreak/Parried/Stunned are always server-pushed (see HitRegistrationService), so
+			-- there's no local function to hang a recovery timer off — this is that timer.
+			-- pendingStunDuration takes priority since Stunned's duration varies per hit.
 			local hardStunDuration = pendingStunDuration or HARD_STUN_DURATIONS[newState]
 			pendingStunDuration = nil
+
+			-- WalkSpeed/JumpPower lock bookkeeping, independent of the timer-scheduling below —
+			-- entering ParryRecovery must unlock Parrying's guard hold while STILL reaching
+			-- RECOVERY_DURATIONS' own scheduleTask, which a single elseif chain would prevent.
 			if hardStunDuration then
-				lockMovementForStun(humanoid, stunPropertyConnections)
+				lockMovementForStun(humanoid, stunPropertyConnections, HARD_STUN_WALK_SPEEDS[newState])
+			elseif GUARD_WALK_LOCK_STATES[newState] then
+				lockMovementForStun(humanoid, stunPropertyConnections, BlockStats.WalkSpeed, BlockStats.JumpPower)
+			elseif HARD_STUN_DURATIONS[oldState] or GUARD_WALK_LOCK_STATES[oldState] then
+				unlockMovementForStun(humanoid, stunPropertyConnections)
+			end
+
+			if hardStunDuration then
 				scheduleTask("CombatFlow", hardStunDuration, function()
 					if fsm.CurrentState == newState then
 						fsm:transition(CombatStateDefs.Idle)
 					end
 				end)
-			elseif HARD_STUN_DURATIONS[oldState] then
-				unlockMovementForStun(humanoid, stunPropertyConnections)
 			elseif RECOVERY_DURATIONS[newState] then
-				-- ParryRecovery: same recovery-timer shape as the hard-stun branch above, just no
-				-- lockMovementForStun/unlockMovementForStun call — movement was never frozen to begin
-				-- with, so there's nothing to restore on the way out either.
 				local recoveryDuration = RECOVERY_DURATIONS[newState]
 				scheduleTask("CombatFlow", recoveryDuration, function()
 					if fsm.CurrentState == newState then
@@ -316,30 +283,21 @@ function ClientCombatState.start()
 				end)
 			end
 
-			-- F held through an M1/Critical/Feint that correctly refused to start Parrying mid-swing
-			-- (see startParrying's Idle-only guard) never got a second Begin edge to retry on once
-			-- the swing actually finished — ContextActionService only fires on the key's own
-			-- press/release, not "still held". Catching the swing's own landing on Idle here is what
-			-- actually opens the parry window the instant it becomes legal again.
+			-- F held through a swing that correctly refused to start Parrying never got a retry —
+			-- catching the landing on Idle here is what opens the window once it's legal again.
 			if newState == CombatStateDefs.Idle and isBlockHeld then
 				startParrying()
 			end
 		end)
 
-		-- Server rejected our last transition (desync, or a rule the server enforces that we
-		-- don't) and echoed its own authoritative state back to just us. Snap to it and drop
-		-- any pending follow-up scheduled off the prediction we now know was wrong.
+		-- Server rejected our last transition and echoed its own state back to just us. Snap to it
+		-- and drop any pending follow-up scheduled off the now-wrong prediction.
 		local correctionConnection = CombatIntent.OnClientEvent:Connect(function(action, forcedState, durationOverride)
 			if action ~= "ForceState" then return end
 
 			if fsm.CurrentState == forcedState then
-				-- Not a stale echo of our own prediction — a durationOverride means the SERVER means
-				-- to re-fire even though we're already here (e.g. a second combo hit landing while
-				-- still Stunned from the first, refreshing/extending the clock — see
-				-- CombatStateService.forceState). fsm:forceState() itself would no-op on a same-state
-				-- call and never re-fire StateChanged, so the refresh has to happen directly here
-				-- instead: WalkSpeed/JumpPower/the watcher connections are already correctly locked,
-				-- only the recovery timer itself needs restarting under the new duration.
+				-- Not a stale echo — a durationOverride means the server wants a refire even though
+				-- we're already here (e.g. a second combo hit while still Stunned).
 				if durationOverride and HARD_STUN_DURATIONS[forcedState] then
 					scheduleTask("CombatFlow", durationOverride, function()
 						if fsm.CurrentState == forcedState then
@@ -359,10 +317,8 @@ function ClientCombatState.start()
 			suppressNextEcho = true
 			fsm:forceState(forcedState)
 
-			-- Keep WalkSpeed in sync with wherever we just got snapped to — BlockBreak/Parried/Stunned's
-			-- own lock/unlock (WalkSpeed, JumpPower, and the watcher connections) already happens
-			-- inside the StateChanged handler above (forceState fires it too), but a correction
-			-- landing on Blocking, Parrying, or anywhere else needs this handled here.
+			-- WalkSpeed/JumpPower for BlockBreak/Parried/Stunned/guard already synced via the
+			-- StateChanged handler above (forceState fires it too); this covers everything else.
 			if forcedState == CombatStateDefs.Blocking or forcedState == CombatStateDefs.Parrying then
 				humanoid.WalkSpeed = BlockStats.WalkSpeed
 			elseif not HARD_STUN_DURATIONS[forcedState] then
@@ -370,9 +326,8 @@ function ClientCombatState.start()
 			end
 		end)
 
-		-- Sweeps every frame for the given stats/active-state/attackKind combo, so a fast camera
-		-- turn mid-swing still lands instead of a single check on the frame the attack started.
-		-- Shared by both M1 (Stats/M1_Active/"M1") and Critical (CriticalStats/Critical_Active/"Critical").
+		-- Sweeps every Heartbeat for the active window so a fast camera turn mid-swing still lands.
+		-- Shared by M1 and Critical.
 		local function performHitboxSweep(activeStats, activeState, attackKind)
 			local overlapParams = OverlapParams.new()
 			overlapParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -413,20 +368,12 @@ function ClientCombatState.start()
 			end)
 		end
 
-		-- Committed dash: forces forward velocity for the RunningAttack's ENTIRE Windup-Active-Endlag
-		-- span, not just the Windup close-the-distance beat — decaying to a dead stop by the time
-		-- Endlag ends. Holding Run+Forward the whole time used to just carry the player through the
-		-- swing at full RunSpeed (the movement FSM never leaves Running mid-attack, and Humanoid's
-		-- WalkSpeed has no ramp, so ordinary WASD silently out-competed the old Windup-only dash the
-		-- instant it let go) — this constraint's MaxAxesForce dominates Humanoid's own movement for
-		-- as long as it's enabled, the same way Dashing/Sliding already override WASD, so the player
-		-- is genuinely locked into the attack instead of being able to run straight through it.
-		-- Re-reads current facing every Heartbeat so the player can still steer (turn) while locked —
-		-- no camera/steering lock, no iframes, unlike the Type Soul reference this was modeled on.
-		-- Returns a release() function so an early cancel (Feint) can cut the lock short instead of
-		-- only ever being able to let it run its full course.
+		-- Committed forward dash for RunningAttack's entire Windup-Active-Endlag span, decaying to a
+		-- stop by Endlag — the constraint dominates WASD for as long as it's enabled, same as
+		-- Dashing/Sliding. Re-reads facing every Heartbeat so the player can still steer. Returns
+		-- release() so Feint can cut it short.
 		local function performRunningAttackDash(totalDuration: number)
-			local massForce = hrp.AssemblyMass * 1000
+			local massForce = hrp.AssemblyMass * CombatConstants.VelocityConstraintForceMultiplier
 			local generation = VelocityConstraintUtils.activate(dashVelocityPool, Vector3.new(massForce, 0, massForce))
 			ClientCombatState.MovementLocked = true
 
@@ -458,8 +405,7 @@ function ClientCombatState.start()
 				speedValue:Destroy()
 				steerConnection:Disconnect()
 				VelocityConstraintUtils.deactivateIfCurrent(dashVelocityPool, generation)
-				-- Only clear the flag if a newer RunningAttack hasn't already re-locked movement
-				-- (chained swing) since this one started.
+				-- Only clear if a newer RunningAttack hasn't already re-locked movement.
 				if dashVelocityPool.generation == generation then
 					ClientCombatState.MovementLocked = false
 				end
@@ -469,16 +415,10 @@ function ClientCombatState.start()
 			return release
 		end
 
-		-- Momentum-preserving plunge for the whole AerialAttack swing, modeled on a reference
-		-- dive-punch implementation: a brief suspended hang right as the swing starts (selling the
-		-- windup as a held beat instead of just falling straight through it), then an accelerating
-		-- forward+down dive blended with whatever horizontal momentum was already carried into the
-		-- swing, held at peak speed until landing or the swing ends — same "constraint dominates
-		-- gravity/WASD for the duration" mechanism as performRunningAttackDash above, just driving
-		-- all three axes since this happens mid-air. Character collision is briefly ghosted for the
-		-- dive so a low-angle plunge can't snag on a ledge/railing mid-swing — same pattern
-		-- MovementPhysicsController's handleTreeJumping uses. Returns release() so an early cancel
-		-- (Feint, or landing) can cut the lock short instead of only ever running its full course.
+		-- Momentum-preserving plunge for the whole AerialAttack swing: a brief suspended hang, then
+		-- an accelerating forward+down dive blended with pre-attack momentum, held at peak speed
+		-- until landing or the swing ends. Collision is briefly ghosted so a low-angle plunge can't
+		-- snag a ledge. Returns release() so Feint/landing can cut it short.
 		local function performAerialAttackDive(totalDuration: number)
 			local preAttackMomentum = Vector3.new(hrp.AssemblyLinearVelocity.X, 0, hrp.AssemblyLinearVelocity.Z)
 				* AerialAttackDive.MomentumRetention
@@ -504,12 +444,11 @@ function ClientCombatState.start()
 				end
 			end
 
-			local massForce = hrp.AssemblyMass * 1000
+			local massForce = hrp.AssemblyMass * CombatConstants.VelocityConstraintForceMultiplier
 			local generation = VelocityConstraintUtils.activate(dashVelocityPool, Vector3.new(massForce, massForce, massForce))
 			ClientCombatState.MovementLocked = true
 
-			-- Hang: hold near-zero vertical motion (plus carried momentum) instead of free-falling
-			-- straight through the anticipation beat.
+			-- Hang: near-zero vertical motion (plus carried momentum) instead of free-falling through the anticipation beat.
 			dashVelocityPool.velocity.VectorVelocity = Vector3.new(0, AerialAttackDive.HangLift, 0) + preAttackMomentum
 
 			local diveStartTime = os.clock() + AerialAttackDive.HangDuration
@@ -528,11 +467,8 @@ function ClientCombatState.start()
 				dashVelocityPool.velocity.VectorVelocity = diveDirection * speedValue.Value + preAttackMomentum
 			end)
 
-			-- Ramp up to peak plunge speed right as the hang ends, then HOLD there for the rest of
-			-- the swing instead of tapering back off — the early-landing release() below already
-			-- cuts the dive the instant you actually touch down, so there's no need to decay back to
-			-- a stop pre-emptively on a fixed timer; doing that was cutting the plunge short well
-			-- before it closed the distance to the ground on anything but the shortest hops.
+			-- Ramp to peak speed as the hang ends, then hold — release() below cuts it the instant
+			-- landing actually happens, so there's no need to taper back down on a fixed timer.
 			task.delay(AerialAttackDive.HangDuration, function()
 				if dashVelocityPool.generation ~= generation then return end
 
@@ -564,12 +500,8 @@ function ClientCombatState.start()
 				end
 			end
 
-			-- The plunge is meant to end AT the ground, not fight the landing recovery for control
-			-- of the HRP's velocity — MovementPhysicsController's own landing handlers (HeavyLanding
-			-- in particular) drive a separate LinearVelocity constraint the instant the movement FSM
-			-- leaves Falling, and running both at once fights over the same physics body. Cutting the
-			-- dive the moment that happens lets the landing own the character from there, same as a
-			-- real impact would.
+			-- End the plunge the moment a real landing takes over, instead of fighting it for
+			-- control of the HRP's velocity.
 			local movementFSM = ClientMovementState.CurrentFSM
 			if movementFSM then
 				releaseConnection = movementFSM.StateChanged:Connect(function(_oldState, newState)
@@ -583,17 +515,29 @@ function ClientCombatState.start()
 			return release
 		end
 
+		-- Only legal from Idle, mirrored server-side — can't swap weapons mid-swing/block/stun.
+		-- Echoed to the server (same shape as the FSM's own UpdateState echo) so HitRegistrationService
+		-- and CombatStateService's own gate agree on whether this player can currently attack.
+		local function setEquipped(newEquipped: boolean)
+			if isEquipped == newEquipped then return end
+			if fsm.CurrentState ~= CombatStateDefs.Idle then return end
+
+			isEquipped = newEquipped
+			ClientCombatState.IsEquipped = newEquipped
+			CombatIntent:FireServer("SetEquipped", { equipped = newEquipped })
+			ClientCombatState.EquipChanged:Fire(newEquipped)
+		end
+
 		local function swing()
+			if not isEquipped then return end
 			bufferedSwing = false
 
-			-- groundedComboType tracks whether this hit belongs to the M1 combo track at all
-			-- (only "M1" advances/reads comboStep); attackType is what actually gets sent to the
-			-- server and picked for animation — the last hit of the combo (comboStep ==
-			-- ComboLength) upgrades from "M1" to "Flourish" without leaving the combo track.
+			-- groundedComboType tracks the combo track itself (only "M1" advances comboStep);
+			-- attackType is what's sent to the server — the last combo hit upgrades to "Flourish".
 			local groundedComboType = determineAttackType()
 			local now = os.clock()
 
-			-- On cooldown: fall back to a plain M1 rather than refusing to swing at all.
+			-- On cooldown: fall back to a plain M1 rather than refusing to swing.
 			local runningAttackOnCooldown = groundedComboType == "RunningAttack" and now - lastRunningAttackTime < RunningAttackStats.Cooldown
 			local aerialAttackOnCooldown = groundedComboType == "AerialAttack" and now - lastAerialAttackTime < AerialAttackCooldown
 			if runningAttackOnCooldown or aerialAttackOnCooldown then
@@ -613,10 +557,17 @@ function ClientCombatState.start()
 			local attackType = if isFlourish then "Flourish" else groundedComboType
 			ClientCombatState.AttackType = attackType
 
-			-- Which stats govern THIS swing's timing/hitbox/damage. Flourish rides the base M1
-			-- timing/hitbox (only its damage/knockback differ, applied server-side); RunningAttack
-			-- has its own full set. AerialAttack still shares base Stats for now.
+			-- Which stats govern this swing. Flourish rides base M1 timing/hitbox; RunningAttack has
+			-- its own set; AerialAttack can override just the hitbox.
 			local activeStats = if attackType == "RunningAttack" then RunningAttackStats else Stats
+			local sweepStats = activeStats
+			if attackType == "AerialAttack" and (AerialAttackDive.HitboxSize or AerialAttackDive.HitboxOffset) then
+				sweepStats = {
+					ActiveTime = activeStats.ActiveTime,
+					HitboxSize = AerialAttackDive.HitboxSize or activeStats.HitboxSize,
+					HitboxOffset = AerialAttackDive.HitboxOffset or activeStats.HitboxOffset,
+				}
+			end
 
 			if groundedComboType == "M1" then
 				print(string.format("Fist : %s", isFlourish and "Flourish" or ("M" .. comboStep)))
@@ -642,7 +593,7 @@ function ClientCombatState.start()
 
 			scheduleTask("CombatFlow", activeStats.WindupTime, function()
 				if not fsm:transition(CombatStateDefs.M1_Active) then return end
-				performHitboxSweep(activeStats, CombatStateDefs.M1_Active, attackType)
+				performHitboxSweep(sweepStats, CombatStateDefs.M1_Active, attackType)
 
 				scheduleTask("CombatFlow", activeStats.ActiveTime, function()
 					if not fsm:transition(CombatStateDefs.M1_Endlag) then return end
@@ -661,11 +612,9 @@ function ClientCombatState.start()
 			end)
 		end
 
-		-- Critical: a single heavier hit on its own windup/active/endlag, only startable from Idle
-		-- (no combo/buffering) — mutually exclusive with M1 automatically, since both only ever
-		-- start from Idle. Unlike Running/AerialAttack there's no fallback: on cooldown it just
-		-- doesn't fire.
+		-- Critical: a single heavier hit, only startable from Idle, no combo/buffering. On cooldown it just doesn't fire.
 		local function critical()
+			if not isEquipped then return end
 			local now = os.clock()
 			if now - lastCriticalTime < CriticalStats.Cooldown then
 				return
@@ -693,14 +642,9 @@ function ClientCombatState.start()
 			end)
 		end
 
-		-- Feint: cancels an M1/AerialAttack windup before it reaches Active — no hitbox ever spawns,
-		-- no damage, just a shorter recovery than actually committing to the swing would cost.
-		-- Critical and RunningAttack can never be feinted — Critical isn't even a legal source state
-		-- in the shared CombatTransitionTable (fully committed the instant it's thrown), and
-		-- RunningAttack is excluded here explicitly since it shares M1_Windup/M1_Active with plain
-		-- M1/AerialAttack — the FSM state alone can't tell them apart, only ClientCombatState.AttackType
-		-- can. Also only legal through the first WindowFraction of the windup — read late, the swing
-		-- is treated as already thrown even though M1_Active technically hasn't fired yet.
+		-- Feint: cancels an M1/AerialAttack windup before Active, cheaper recovery than a real
+		-- whiff. Critical/RunningAttack can never be feinted. Only legal through the first
+		-- WindowFraction of the windup.
 		local function feint()
 			if fsm.CurrentState ~= CombatStateDefs.M1_Windup then
 				return
@@ -711,38 +655,44 @@ function ClientCombatState.start()
 			if os.clock() - windupStartTime > currentWindupTime * FeintStats.WindowFraction then
 				return
 			end
+			if os.clock() - lastFeintTime < FeintStats.Cooldown then
+				return
+			end
 
 			if not fsm:transition(CombatStateDefs.Feint) then
 				return
 			end
+			lastFeintTime = os.clock()
 			print("Fist : Feint")
 
-			-- Cut the AerialAttack dive short instead of letting it keep running past the swing it
-			-- belonged to (RunningAttack can't reach this point at all — see the AttackType guard
-			-- above — so this only ever fires for an AerialAttack's lock in practice).
+			-- Cut an AerialAttack dive short (RunningAttack can't reach this point).
 			if activeMovementLockRelease then
 				activeMovementLockRelease()
 				activeMovementLockRelease = nil
 			end
 
-			-- Scheduling under the same "CombatFlow" name the Windup -> Active chain uses cancels
-			-- whatever pending transition that swing had queued up, for free (see scheduleTask above).
+			-- Same "CombatFlow" task name as the Windup->Active chain, so this cancels it for free.
 			scheduleTask("CombatFlow", FeintStats.RecoveryTime, function()
 				fsm:transition(CombatStateDefs.Idle)
 			end)
 		end
 
-		-- F always opens on Parrying first — a brief timing window (ParryStats.WindowTime), not the
-		-- sustained guard. A front-facing hit landing during it is a true parry: zero damage, the
-		-- ATTACKER gets forced into Parried, and this client snaps straight back to Idle early (see
-		-- the ForceState correction handler above) instead of riding out the rest of this window —
-		-- entirely server-authoritative (see HitRegistrationService) so a modified client can't just
-		-- claim a parry for free. If the window closes with nothing landing and F is still held, it
-		-- settles into the sustained Blocking guard below instead — same WalkSpeed cap the whole time,
-		-- so there's no visible speed hitch at the handoff.
+		-- F always opens on Parrying first: a brief timing window, not the sustained guard. A
+		-- front-facing hit landing during it is a true parry (zero damage, server-authoritative). If
+		-- the window closes with nothing landed and F is still held, it settles into Blocking.
 		function startParrying()
 			if fsm.CurrentState ~= CombatStateDefs.Idle then return end
+			if not isEquipped then return end
 			if isMovementLocked() then return end
+
+			-- Whiffed recently: skip straight to Blocking instead of a fresh Parrying window.
+			if os.clock() - lastParryWhiffTime < ParryStats.WhiffCooldown then
+				if not fsm:transition(CombatStateDefs.Blocking) then return end
+				print("Fist : Block")
+				humanoid.WalkSpeed = BlockStats.WalkSpeed
+				return
+			end
+
 			if not fsm:transition(CombatStateDefs.Parrying) then return end
 
 			print("Fist : Parry")
@@ -750,7 +700,9 @@ function ClientCombatState.start()
 
 			scheduleTask("CombatFlow", ParryStats.WindowTime, function()
 				if fsm.CurrentState ~= CombatStateDefs.Parrying then return end
+				lastParryWhiffTime = os.clock()
 				if isBlockHeld then
+					print("Fist : Block")
 					fsm:transition(CombatStateDefs.Blocking)
 				else
 					restoreWalkSpeed(humanoid)
@@ -759,15 +711,10 @@ function ClientCombatState.start()
 			end)
 		end
 
-		-- Blocking: attacks landing on the front of a Blocking target are absorbed server-side
-		-- instead of dealing damage (see HitRegistrationService), at the cost of posture — this
-		-- client only owns the FSM transition, movement speed, and animation; the actual
-		-- damage-absorption/posture/BlockBreak decision is entirely server-authoritative so a
-		-- modified client can't just claim to be blocking for free immunity.
+		-- Blocking: front-facing hits are absorbed server-side at the cost of posture — this client
+		-- only owns the FSM/speed/animation, the actual absorption is server-authoritative.
 		local function stopBlocking()
-			-- Released before the window resolved either way (timeout->Blocking or a parry landing) —
-			-- cancels the pending CombatFlow task above via scheduleTask's own same-name replacement,
-			-- and drops straight back to Idle with no guard ever actually held.
+			-- Released before the window resolved either way — drop straight back to Idle.
 			if fsm.CurrentState == CombatStateDefs.Parrying then
 				print("Fist : UnParry")
 				restoreWalkSpeed(humanoid)
@@ -811,6 +758,13 @@ function ClientCombatState.start()
 			return Enum.ContextActionResult.Pass
 		end, false, Enum.UserInputType.MouseButton2)
 
+		ContextActionService:BindAction("CombatEquip", function(_actionName, inputState)
+			if inputState == Enum.UserInputState.Begin then
+				setEquipped(not isEquipped)
+			end
+			return Enum.ContextActionResult.Pass
+		end, false, Enum.KeyCode.E)
+
 		ContextActionService:BindAction("CombatBlock", function(_actionName, inputState)
 			if inputState == Enum.UserInputState.Begin then
 				isBlockHeld = true
@@ -822,33 +776,36 @@ function ClientCombatState.start()
 			return Enum.ContextActionResult.Pass
 		end, false, Enum.KeyCode.F)
 
-		-- TEMP debug, Studio-only: holding F physically doesn't survive switching focus to a
-		-- second local-server test client (Roblox releases held keys on focus loss), which makes
-		-- guard-break/parry untestable solo without this. "/block" toggles Parrying/Blocking on/off
-		-- through the exact same startParrying/stopBlocking path the real F-hold uses — not a
-		-- separate mock — so what you're testing is the real thing, just latched instead of held.
+		-- TEMP debug, Studio-only (Roblox releases held keys on focus loss, making 2-client testing
+		-- painful without these). "/block" toggles the real startParrying/stopBlocking path.
+		-- "/parry" is the one-shot version (doesn't touch isBlockHeld, so a whiff returns to Idle on
+		-- its own). "/parried" force-enters the Parried punish state indefinitely via the server (so
+		-- MovementValidationService's lock actually holds) for testing movement while punished;
+		-- "/resetcombat" releases it.
 		local debugChatConnection: RBXScriptConnection? = nil
 		if RunService:IsStudio() then
 			debugChatConnection = player.Chatted:Connect(function(message)
-				if message ~= "/block" then return end
-				if isBlockHeld then
-					isBlockHeld = false
-					stopBlocking()
-				else
-					isBlockHeld = true
+				if message == "/block" then
+					if isBlockHeld then
+						isBlockHeld = false
+						stopBlocking()
+					else
+						isBlockHeld = true
+						startParrying()
+					end
+				elseif message == "/parry" then
 					startParrying()
+				elseif message == "/parried" then
+					CombatIntent:FireServer("DebugForceState", { state = CombatStateDefs.Parried })
+				elseif message == "/resetcombat" then
+					CombatIntent:FireServer("DebugForceState", { state = CombatStateDefs.Idle })
 				end
 			end)
 		end
 
-		-- Blocks Q from ever reaching ClientMovementState's own TriggerDash binding while mid-attack
-		-- (any combat state other than Idle — Windup/Active/Endlag/Feint recovery all count) — you
-		-- have to finish or feint out of a swing before dashing again, not cancel straight into one.
-		-- Bound at High priority (ClientMovementState's TriggerDash uses the implicit Default/Medium
-		-- priority) and Sinking the input is what actually stops it, same interception pattern
-		-- ParkourSpacebar already uses on Space. Requiring ClientCombatState from ClientMovementState
-		-- to check this the other way around would be a circular require (ClientCombatState already
-		-- requires ClientMovementState), so this has to be the side that intercepts.
+		-- Blocks Q from reaching ClientMovementState's TriggerDash while mid-attack — finish or
+		-- feint before dashing again. High priority + Sink, since checking this the other way
+		-- around would be a circular require.
 		ContextActionService:BindActionAtPriority("CombatDashBlock", function(_actionName, inputState)
 			if inputState == Enum.UserInputState.Begin and ClientCombatState.isEngaged() then
 				return Enum.ContextActionResult.Sink
@@ -856,25 +813,19 @@ function ClientCombatState.start()
 			return Enum.ContextActionResult.Pass
 		end, false, Enum.ContextActionPriority.High.Value, Enum.KeyCode.Q)
 
-		-- Hard-stun block (BlockBreak/Parried): Space (jump, wall-run/cling, tree-launch) and Y (tree
-		-- jump) are the only movement abilities gated behind their own key press rather than
-		-- continuous WASD input — lockMovementForStun's WalkSpeed/JumpPower freeze can't stop them,
-		-- since they drive their own velocity constraints independently of Humanoid movement (see
-		-- ClientMovementState's ParkourSpacebar/TreeJump bindings). Bound one above both of those
-		-- bindings' own High priority so this Sink lands before either gets a chance to fire. Scoped
-		-- to HARD_STUN_DURATIONS specifically rather than the broader isEngaged() above — every other
-		-- combat state (M1, Blocking, Parrying, Critical, ...) deliberately still allows these; only a
-		-- broken guard or a landed hit against a parry is meant to be a hard stun.
+		-- Hard-stun/guard block: Space/Y are gated behind their own key press, so JumpPower alone
+		-- can't stop the scripted parkour abilities they trigger. Bound above ParkourSpacebar/TreeJump's
+		-- own High priority. Guard states included alongside the hard-stuns — holding guard means no jumping either.
 		ContextActionService:BindActionAtPriority("CombatStunBlock", function(_actionName, inputState)
-			if inputState == Enum.UserInputState.Begin and HARD_STUN_DURATIONS[fsm.CurrentState] then
+			if inputState == Enum.UserInputState.Begin
+				and (HARD_STUN_DURATIONS[fsm.CurrentState] or GUARD_WALK_LOCK_STATES[fsm.CurrentState])
+			then
 				return Enum.ContextActionResult.Sink
 			end
 			return Enum.ContextActionResult.Pass
 		end, false, Enum.ContextActionPriority.High.Value + 1, Enum.KeyCode.Space, Enum.KeyCode.Y)
 
-		-- Died covers the normal case; AncestryChanged is the fallback for any character removal
-		-- that doesn't go through Humanoid death (resets, hub teleports, etc.) — same pattern as
-		-- every movement controller.
+		-- Died covers the normal case; AncestryChanged is the fallback for non-death removal.
 		local cleaned = false
 		local function cleanup()
 			if cleaned then return end
@@ -883,6 +834,7 @@ function ClientCombatState.start()
 			ContextActionService:UnbindAction("CombatM1")
 			ContextActionService:UnbindAction("CombatCritical")
 			ContextActionService:UnbindAction("CombatFeint")
+			ContextActionService:UnbindAction("CombatEquip")
 			ContextActionService:UnbindAction("CombatBlock")
 			ContextActionService:UnbindAction("CombatDashBlock")
 			ContextActionService:UnbindAction("CombatStunBlock")
@@ -897,10 +849,8 @@ function ClientCombatState.start()
 			for _, activeTask in pairs(activeTasks) do
 				task.cancel(activeTask)
 			end
-			-- performRunningAttackDash's own task.delay isn't in activeTasks (it's a fire-and-forget
-			-- generation-gated cleanup, same pattern as VelocityConstraintUtils elsewhere) — if the
-			-- character dies/despawns mid-lock, clear this directly so it doesn't strand the next
-			-- character's FootstepController permanently silenced.
+			-- performRunningAttackDash's own task.delay isn't in activeTasks (fire-and-forget,
+			-- generation-gated) — clear this directly so a mid-lock death doesn't strand FootstepController.
 			ClientCombatState.MovementLocked = false
 		end
 

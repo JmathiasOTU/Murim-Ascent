@@ -8,24 +8,18 @@ local MovementStateDefs = require(ReplicatedStorage.Shared.Movement.MovementStat
 local MovementConstants = require(ReplicatedStorage.Shared.Movement.MovementConstants)
 local RemoteRegistry = require(ReplicatedStorage.Shared.Net.RemoteRegistry)
 local WeaponRegistry = require(ReplicatedStorage.Shared.Combat.Weapons.WeaponRegistry)
+local CombatConstants = require(ReplicatedStorage.Shared.Combat.CombatConstants)
 
 local VFXPlaybackController = {}
 local started = false
 
--- Locate our VFX folder
 local AssetsFolder = ReplicatedStorage:WaitForChild("Assets")
 local VFXFolder = AssetsFolder:WaitForChild("VFX")
 local CombatVFXFolder = VFXFolder:WaitForChild("Combat")
 local MovementVFXFolder = VFXFolder:WaitForChild("Movement")
 local CombatSFXFolder = AssetsFolder:WaitForChild("SFX"):WaitForChild("Combat")
 
--- Combat clash/hit SFX are per-weapon (see WeaponTypes.WeaponSFX) rather than one shared global set
--- — a katana clang shouldn't sound like a bare-knuckle punch. Each weapon's own Sound instances live
--- under a same-named subfolder of ReplicatedStorage.Assets.SFX.Combat (e.g. SFX.Combat.Fists), listed
--- by name in that weapon's own Weapons/<Name>.luau (WeaponRegistry[name].SFX.Hit/Parry/Block). Adding
--- a new weapon's SFX is then just: drop its clips in a matching subfolder, list the names in its
--- WeaponData. Resolved fresh per event rather than cached — these fire at most a few times a second,
--- not worth the bookkeeping.
+-- Per-weapon Sound instances under ReplicatedStorage.Assets.SFX.Combat.<weapon name>.
 local function getWeaponSFXFolder(weaponName: string): Instance?
 	local folder = CombatSFXFolder:FindFirstChild(weaponName)
 	if not folder then
@@ -34,15 +28,22 @@ local function getWeaponSFXFolder(weaponName: string): Instance?
 	return folder
 end
 
-local SPRINT_VFX_FORWARD_OFFSET = 4 -- studs ahead of HumanoidRootPart the wind trail is welded at
-local SPRINT_VFX_NAMES = { "SprintVFX" } -- every prefab cloned/welded while Sprinting
+-- Weapon-agnostic SFX (see CombatConstants.SFX).
+local function getGeneralSFXFolder(): Instance?
+	local folder = CombatSFXFolder:FindFirstChild("General")
+	if not folder then
+		warn("Missing General in ReplicatedStorage.Assets.SFX.Combat")
+	end
+	return folder
+end
 
-local SLIDE_VFX_DOWN_OFFSET = 2 -- studs below HumanoidRootPart the dust trail is welded at, so it reads near the ground instead of at torso height
-local SLIDE_VFX_NAMES = { "SlideVfx" } -- every prefab cloned/welded while Sliding
+local SPRINT_VFX_FORWARD_OFFSET = 4
+local SPRINT_VFX_NAMES = { "SprintVFX" }
 
--- States the FSM can pass through mid-sprint (jump, wall run, land, etc.) that should NOT cut the
--- trail. Only leaving Sprinting for a state outside this set (Walking, Idle, Crouching, an
--- explicit Dash/Slide, ...) counts as "actually stopped sprinting".
+local SLIDE_VFX_DOWN_OFFSET = 2
+local SLIDE_VFX_NAMES = { "SlideVfx" }
+
+-- States the FSM can pass through mid-sprint that should NOT cut the trail.
 local SPRINT_VFX_CONTINUATION_STATES = {
 	[MovementStateDefs.Jumping] = true,
 	[MovementStateDefs.DoubleJumping] = true,
@@ -61,8 +62,6 @@ local SPRINT_VFX_CONTINUATION_STATES = {
 	[MovementStateDefs.Dashing] = true,
 }
 
--- Picks a random NAMED Sound instance out of `folder` and clones it — whatever Volume/RollOff/etc
--- the instance was already set up with in Studio carries over as-is.
 local function playRandomNamedSound(folder: Instance, names: { string }, parent: Instance)
 	local soundName = names[math.random(1, #names)]
 	local template = folder:FindFirstChild(soundName)
@@ -76,11 +75,9 @@ local function playRandomNamedSound(folder: Instance, names: { string }, parent:
 	sound:Play()
 end
 
-local ONE_SHOT_VFX_CLEANUP_TIME = 4 -- seconds; gives particles time to fade before the clone is destroyed
-local AIR_JUMP_VFX_CLEANUP_TIME = 2 -- shorter than the shared default above; the double-jump burst was lingering noticeably past the moment itself
+local ONE_SHOT_VFX_CLEANUP_TIME = 4
+local AIR_JUMP_VFX_CLEANUP_TIME = 2
 
--- Clones a named one-shot prefab from VFX.Movement at targetCFrame and bursts its emitters once.
--- cleanupTime overrides the default lifespan for VFX that need to fade faster/slower than most.
 local function playBurstVFX(vfxName: string, targetCFrame: CFrame, cleanupTime: number?)
 	local vfxTemplate = MovementVFXFolder:FindFirstChild(vfxName)
 	if not vfxTemplate then
@@ -91,19 +88,11 @@ local function playBurstVFX(vfxName: string, targetCFrame: CFrame, cleanupTime: 
 	local vfxClone = vfxTemplate:Clone()
 	vfxClone.CFrame = targetCFrame
 	vfxClone.Parent = workspace
-
-	-- A one-shot burst is meant to sit exactly at targetCFrame for its brief lifetime, not fall
-	-- under gravity — anchor it here so that holds regardless of whether a given VFX asset
-	-- remembered to set Anchored itself in Studio.
 	vfxClone.Anchored = true
 	vfxClone.CanCollide = false
 
 	for _, emitter in ipairs(vfxClone:GetDescendants()) do
 		if emitter:IsA("ParticleEmitter") then
-			-- Force this off regardless of how the prefab was left in Studio: a burst VFX must
-			-- fire exactly once via the Emit() call below, never stream continuously off its own
-			-- Rate for as long as the clone survives — Enabled=true left on the emitter was
-			-- reading as "emitting for the whole cleanup window" instead of a single pop.
 			emitter.Enabled = false
 			emitter:Emit(emitter:GetAttribute("EmitCount") or 15)
 		end
@@ -112,32 +101,23 @@ local function playBurstVFX(vfxName: string, targetCFrame: CFrame, cleanupTime: 
 	Debris:AddItem(vfxClone, cleanupTime or ONE_SHOT_VFX_CLEANUP_TIME)
 end
 
--- HumanoidRootPart sits at roughly torso height, not the feet — bursting a landing VFX straight at
--- hrp.CFrame plants it a couple studs up in the air. Raycast down to the actual floor instead (also
--- handles slopes/stairs correctly, unlike a fixed vertical offset).
+-- HumanoidRootPart sits at torso height; raycast to the actual floor instead of a fixed offset.
 local function getGroundCFrame(hrp: BasePart, character: Instance): CFrame
 	local rayParams = RaycastParams.new()
 	rayParams.FilterType = Enum.RaycastFilterType.Exclude
 	rayParams.FilterDescendantsInstances = {character}
 	rayParams.IgnoreWater = true
 
-	-- Keep the character's own facing, not just its position — CFrame.new(position) alone has zero
-	-- rotation (always faces the same fixed world direction), so the VFX would play sideways
-	-- relative to the character any time they aren't facing that one specific way.
 	local rayResult = workspace:Raycast(hrp.Position, Vector3.new(0, -MovementConstants.GroundVFXCheckDistance, 0), rayParams)
 	if rayResult then
 		return CFrame.new(rayResult.Position) * hrp.CFrame.Rotation
 	end
-	return hrp.CFrame -- fallback: no floor found within range, shouldn't normally happen right after a landing
+	return hrp.CFrame
 end
 
--- R6-only per the project's rig policy (AI Master Class Guide, section 1) — matches Attachment1
--- (top) / Attachment2 (bottom) of each limb against a Trail running between them
+-- R6-only per the project's rig policy.
 local LIMB_TRAIL_LIMBS = { "Right Arm", "Left Arm", "Right Leg", "Left Leg" }
 
--- Clones a paired Attachment1/Attachment2 + Trail from a named VFX.Movement prefab (DashTrailVfx,
--- AirJumpTrailVfx, ...) onto each limb, so the character streaks a motion trail off both arms and
--- legs for the given duration. Shared by anything that wants this "streaking limbs" look.
 local function playLimbTrail(vfxName: string, character: Instance, duration: number)
 	local trailTemplate = MovementVFXFolder:FindFirstChild(vfxName)
 	if not trailTemplate then
@@ -165,7 +145,6 @@ local function playLimbTrail(vfxName: string, character: Instance, duration: num
 	end
 end
 
--- Clones each named prefab from VFX.Combat under `parent` and bursts its emitters, all in the same frame
 local function spawnClashSparks(vfxNames, parent: Instance)
 	for _, vfxName in ipairs(vfxNames) do
 		local vfxPrefab = CombatVFXFolder:FindFirstChild(vfxName)
@@ -175,7 +154,6 @@ local function spawnClashSparks(vfxNames, parent: Instance)
 
 			for _, emitter in ipairs(vfxClone:GetDescendants()) do
 				if emitter:IsA("ParticleEmitter") then
-					-- Emits a burst of particles based on what you set in Studio
 					emitter:Emit(emitter:GetAttribute("EmitCount") or 15)
 				end
 			end
@@ -185,29 +163,21 @@ local function spawnClashSparks(vfxNames, parent: Instance)
 	end
 end
 
--- HELPER 5: React to server-broadcast combat clashes (parry clang + sparks). weaponName picks which
--- weapon's own SFX subfolder to pull from (see getWeaponSFXFolder/WeaponTypes.WeaponSFX) — falls
--- back to silence (VFX sparks still play) rather than erroring if it's missing/unrecognized, same
--- "a gap here is a content gap, not a crash" convention as loadTrack/playRandomNamedSound elsewhere.
+-- Reacts to server-broadcast combat clashes. A missing/unrecognized weaponName falls back to silence (VFX still plays).
 local function onCombatVisual(effectType: string, position: Vector3, weaponName: string?)
 	local weaponData = weaponName and WeaponRegistry[weaponName]
 	local weaponSFXFolder = weaponName and getWeaponSFXFolder(weaponName)
 
 	if effectType == "Parry" then
-		-- 1. Create an invisible anchor at the clash position
 		local clashAnchor = Instance.new("Attachment")
 		clashAnchor.Position = position
-		clashAnchor.Parent = workspace.Terrain -- Terrain is a great, stable parent for loose attachments
+		clashAnchor.Parent = workspace.Terrain
 
-		-- 2. Pick a random sound and play it
 		if weaponData and weaponSFXFolder then
 			playRandomNamedSound(weaponSFXFolder, weaponData.SFX.Parry, clashAnchor)
 		end
 
-		-- 3. Clone and Emit the Visual Sparks
 		spawnClashSparks({ "ParryVFX" }, clashAnchor)
-
-		-- 4. Garbage Collection: Destroy the attachment and sound after 2 seconds
 		Debris:AddItem(clashAnchor, 2)
 
 	elseif effectType == "Block" then
@@ -219,9 +189,7 @@ local function onCombatVisual(effectType: string, position: Vector3, weaponName:
 			playRandomNamedSound(weaponSFXFolder, weaponData.SFX.Block, clashAnchor)
 		end
 
-		-- Both block sparks fire together off the same anchor
 		spawnClashSparks({ "BlockPT1", "BlockPT2" }, clashAnchor)
-
 		Debris:AddItem(clashAnchor, 2)
 
 	elseif effectType == "Hit" then
@@ -234,20 +202,28 @@ local function onCombatVisual(effectType: string, position: Vector3, weaponName:
 		end
 
 		Debris:AddItem(clashAnchor, 2)
+
+	elseif effectType == "Feint" then
+		local clashAnchor = Instance.new("Attachment")
+		clashAnchor.Position = position
+		clashAnchor.Parent = workspace.Terrain
+
+		local generalSFXFolder = getGeneralSFXFolder()
+		if generalSFXFolder then
+			playRandomNamedSound(generalSFXFolder, CombatConstants.SFX.Feint, clashAnchor)
+		end
+
+		Debris:AddItem(clashAnchor, 2)
 	end
 end
 
-
--- Manages a group of continuously-active VFX parts welded to the character's HumanoidRootPart at
--- a fixed local offset for as long as a state is toggled on — shared by Sprint's wind trail and
--- Slide's dust trail. Cuts instantly (no fade-out) the moment the toggle turns off, since both
--- are meant to disappear the instant their state ends, not linger.
+-- Shared by Sprint's wind trail and Slide's dust trail — VFX parts welded to HRP for as long as toggled on, cut instantly on toggle-off.
 local function createToggleableVFX(hrp: BasePart, vfxNames: {string}, localOffset: CFrame)
 	local activeParts = {}
 
 	return function(isEnabled: boolean)
 		if isEnabled then
-			if #activeParts > 0 then return end -- Already playing
+			if #activeParts > 0 then return end
 
 			for _, vfxName in ipairs(vfxNames) do
 				local vfxTemplate = MovementVFXFolder:FindFirstChild(vfxName)
@@ -256,9 +232,6 @@ local function createToggleableVFX(hrp: BasePart, vfxNames: {string}, localOffse
 					vfxClone.CFrame = hrp.CFrame * localOffset
 					vfxClone.Parent = hrp
 
-					-- The template ships with its own WeldConstraint (Part0 = itself), but Part1
-					-- can't be baked in ahead of time — it has to point at *this* character's
-					-- HumanoidRootPart, which only exists once the character has spawned.
 					local weld = vfxClone:FindFirstChildOfClass("WeldConstraint")
 					if weld then
 						weld.Part0 = vfxClone
@@ -280,21 +253,17 @@ local function createToggleableVFX(hrp: BasePart, vfxNames: {string}, localOffse
 	end
 end
 
--- Shared between the local player and every remote player (RemoteMovementState fires the same
--- signal shape).
+-- Shared between the local player and every remote player (RemoteMovementState fires the same signal shape).
 local function setupCharacterVFX(fsm, character)
 	local humanoid = character:WaitForChild("Humanoid")
 	local hrp = character:WaitForChild("HumanoidRootPart")
 
 	local toggleSprintVFX = createToggleableVFX(hrp, SPRINT_VFX_NAMES, CFrame.new(0, 0, -SPRINT_VFX_FORWARD_OFFSET))
 	local toggleSlideVFX = createToggleableVFX(hrp, SLIDE_VFX_NAMES, CFrame.new(0, -SLIDE_VFX_DOWN_OFFSET, 0))
-	local hiddenTransparency = nil -- non-nil only while the real character is hidden mid tree-jump
+	local hiddenTransparency = nil
 
-	-- Hides the real character for the flight so it reads as "gone" during the transit. Stores
-	-- each part's original Transparency (not just a blind 0) so parts that start partially
-	-- transparent for other reasons restore correctly.
 	local function hideCharacterForTreeJump()
-		if hiddenTransparency then return end -- already hidden (shouldn't happen, but don't clobber the stored originals)
+		if hiddenTransparency then return end
 		hiddenTransparency = {}
 		for _, descendant in ipairs(character:GetDescendants()) do
 			if descendant:IsA("BasePart") or descendant:IsA("Decal") then
@@ -336,27 +305,17 @@ local function setupCharacterVFX(fsm, character)
 			playBurstVFX("TreeLandVfx", getGroundCFrame(hrp, character))
 		end
 
-		-- TreeJumping is the only state that hides the character, so leaving it for ANY other
-		-- state (arrived at TreeStanding, or interrupted into Falling/a correction snap) is
-		-- exactly "landed at the destination" — bring it back, with a burst marking the
-		-- reappearance itself at wherever the character currently is.
 		if oldState == MovementStateDefs.TreeJumping and newState ~= MovementStateDefs.TreeJumping then
 			showCharacterAfterTreeJump()
 			playBurstVFX("TreeLandVfx2", hrp.CFrame)
 		end
 
-		-- SPRINTING: Toggle the continuous trail on/off. Passing through a continuation state
-		-- (jump, wall run, landing, ...) mid-sprint deliberately does nothing here, so the trail
-		-- rides through those transitions instead of cutting out and re-igniting.
 		if newState == MovementStateDefs.Sprinting then
 			toggleSprintVFX(true)
 		elseif not SPRINT_VFX_CONTINUATION_STATES[newState] then
 			toggleSprintVFX(false)
 		end
 
-		-- SLIDING: unlike Sprint, Sliding has no continuation states to ride through — it's a
-		-- short, self-contained state that always transitions directly out, so leaving it for
-		-- ANY other state cuts the dust trail immediately.
 		if newState == MovementStateDefs.Sliding then
 			toggleSlideVFX(true)
 		elseif oldState == MovementStateDefs.Sliding then
@@ -364,8 +323,6 @@ local function setupCharacterVFX(fsm, character)
 		end
 	end)
 
-	-- Died covers the normal case; AncestryChanged is the fallback for any character removal
-	-- that doesn't go through Humanoid death (resets, hub teleports, etc.)
 	local cleaned = false
 	local function cleanup()
 		if cleaned then return end

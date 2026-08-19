@@ -1,18 +1,11 @@
 -- src/shared/Movement/TreeTagUtils.luau
--- Shared between the client (TreeJumpUtils, for targeting) and the server
--- (MovementValidationService, for the proximity sanity check) so the "how do we resolve a tagged
--- tree" logic can't drift out of sync between the two — it already did once, when the server's
--- copy checked CollectionService:HasTag on a leaf part directly and never got updated after the
--- client-side version was fixed to walk up to a tagged ancestor Model.
+-- Shared between client (TreeJumpUtils) and server (MovementValidationService) so tag resolution can't drift out of sync.
 local CollectionService = game:GetService("CollectionService")
 local Workspace = game:GetService("Workspace")
 
 local TreeTagUtils = {}
 
--- Walks up from a leaf part to find the nearest ancestor (including the part itself) carrying the
--- tag. GetPartBoundsInRadius only ever returns BaseParts, but a tree is just as likely to be
--- tagged on a wrapping Model as on one specific part inside it — checking HasTag on the leaf alone
--- would silently miss that case entirely.
+-- Walks up from a leaf part to the nearest tagged ancestor — a tree can be tagged on a wrapping Model, not just a leaf part.
 function TreeTagUtils.findTaggedAncestor(instance: Instance, tag: string): Instance?
 	local current: Instance? = instance
 	while current and current ~= Workspace do

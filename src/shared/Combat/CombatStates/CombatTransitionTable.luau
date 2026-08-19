@@ -7,6 +7,7 @@ return {
 		[CombatStateDefs.M1_Windup] = true,
 		[CombatStateDefs.Critical_Windup] = true,
 		[CombatStateDefs.Parrying] = true,
+		[CombatStateDefs.Blocking] = true, -- only while ParryStats.WhiffCooldown is active (see startParrying)
 	},
 
 	[CombatStateDefs.M1_Windup] = {
@@ -23,7 +24,7 @@ return {
 		[CombatStateDefs.M1_Windup] = true, -- chaining into the next combo hit
 	},
 
-	-- No Feint entry here: Critical is a fully committed hit once thrown, unlike M1/AerialAttack.
+	-- No Feint entry: Critical is fully committed once thrown, unlike M1/AerialAttack.
 	[CombatStateDefs.Critical_Windup] = {
 		[CombatStateDefs.Critical_Active] = true,
 	},
@@ -41,10 +42,9 @@ return {
 	},
 
 	[CombatStateDefs.Parrying] = {
-		[CombatStateDefs.Blocking] = true, -- window closed with F still held, no hit landed -- settle into a sustained guard
+		[CombatStateDefs.Blocking] = true, -- window closed, F still held, nothing landed
 		[CombatStateDefs.Idle] = true, -- F released before the window closed
-		-- A successful parry doesn't appear here: it forceStates straight to ParryRecovery below,
-		-- bypassing this table entirely (same as BlockBreak/Parried/Stunned).
+		-- A successful parry bypasses this table entirely, forceStates straight to ParryRecovery.
 	},
 
 	[CombatStateDefs.Blocking] = {

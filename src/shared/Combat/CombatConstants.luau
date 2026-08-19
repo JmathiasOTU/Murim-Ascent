@@ -1,31 +1,37 @@
 -- src/shared/Combat/CombatConstants.luau
--- Game-wide combat tuning that isn't specific to any one weapon (per-weapon numbers — block speed,
--- posture damage per attack — live in each Weapons/*.luau file instead, same split the Type Soul
--- reference this was modeled on uses between its global Configuration and per-weapon WeaponConfig).
+-- Global combat tuning. Per-weapon numbers live in Weapons/*.luau instead.
 return {
-	MaxPosture = 100, -- posture meter ceiling; hitting this while Blocking triggers a BlockBreak
+	MaxPosture = 100, -- posture ceiling; maxing out while Blocking triggers a BlockBreak
 
-	-- Posture decays back toward 0 only once you've stopped blocking/attacking for a beat — not a
-	-- constant drain, and frozen entirely while actively holding block (matches the reference: it
-	-- only ever changes from taking a blocked hit or from this decay, never just from holding block).
-	PostureDecayGraceTime = 1.75, -- seconds since your last block/hit before decay starts ticking
-	PostureDecayInterval = 1, -- seconds between each decay tick
+	-- Posture only decays once you've stopped blocking/attacking for a beat, frozen while holding block
+	PostureDecayGraceTime = 1.75, -- seconds since last block/hit before decay starts
+	PostureDecayInterval = 1, -- seconds between decay ticks
 	PostureDecayAmount = 3, -- posture removed per tick
 
-	-- Seconds locked in BlockBreak after posture maxes out — a hard stun, not just a combat lockout:
-	-- can't attack or block (CombatTransitionTable only allows BlockBreak -> Idle), and movement is
-	-- frozen too (WalkSpeed/JumpPower pinned to 0 client-side, every movement-ability transition
-	-- rejected server-side — see ClientCombatState's lockMovementForStun and
-	-- MovementValidationService's BlockBreak/Parried check).
-	BlockBreakStunTime = 2.5,
+	BlockBreakStunTime = 2.5, -- hard stun (no attack/block/move) after posture maxes out
 
-	-- Seconds the ATTACKER is locked in Parried after their attack lands on a Parrying target — same
-	-- hard-stun shape as BlockBreak (see lockMovementForStun/MovementValidationService, both keyed off
-	-- either state identically), just its own duration. Global rather than per-weapon since it's a
-	-- punish applied to whoever GOT parried, not a property of the parrier's own weapon — how skilled
-	-- the parry timing itself needs to be IS per-weapon (see Weapons/*.luau ParryStats.WindowTime).
-	-- Deliberately longer than the reference's TrueParryStunTime (0.55s) since this design has no
-	-- extra cost/cooldown on the parrier's side to offset (see HitRegistrationService) — the whole
-	-- reward has to come from this window alone, long enough to comfortably land one follow-up hit.
+	-- Hard stun for the ATTACKER after their swing gets parried. Global (not per-weapon) since it's
+	-- a punish applied to whoever got parried, not a property of the parrier's own weapon.
 	ParriedStunTime = 0.7,
+	ParriedWalkSpeed = 3, -- WalkSpeed while Parried -- a major slow, not a full freeze like BlockBreak
+
+	-- MaxAxesForce multiplier (targetMass * this) for knockback/forced-movement LinearVelocity
+	-- constraints (Flourish knockback, RunningAttack/AerialAttack dashes).
+	VelocityConstraintForceMultiplier = 1000,
+
+	-- Weapon-agnostic combat SFX — same set of clips regardless of what's equipped, unlike
+	-- WeaponTypes.WeaponSFX (Hit/Parry/Block, which vary per weapon). Named Sound instances live
+	-- under ReplicatedStorage.Assets.SFX.Combat.General instead of a per-weapon subfolder — see
+	-- VFXPlaybackController.getGeneralSFXFolder for the lookup side.
+	SFX = {
+		Feint = { "Feint1", "Feint2" }, -- plays for every weapon's Feint, not just Fists'
+	},
+
+	-- Combat-only camera head sway (see CameraController) — the camera picks up a smoothed offset
+	-- from how far the Head part has drifted from its resting pose relative to HRP (animation-driven:
+	-- hit reactions, punches, block breaks, ...), not a whole-body lean. Gated to
+	-- ClientCombatState.isEngaged() so it never applies outside combat.
+	CameraHeadSwayStrength = 1, -- multiplier on the raw positional deviation
+	CameraHeadSwayMaxOffset = 1.5, -- studs; caps an extreme animation pose from throwing the camera too far
+	CameraHeadSwaySpeed = 12, -- smoothing rate
 }

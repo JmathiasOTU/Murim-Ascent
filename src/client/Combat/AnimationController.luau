@@ -11,9 +11,7 @@ local AnimationController = {}
 -- TODO: pull from an Inventory/Equip system once one exists; must match ClientCombatState's own hardcode
 local EQUIPPED_WEAPON = "Fists"
 
--- Empty/unset animation ids just don't load a track — the FSM/hitbox/damage loop still works,
--- there's just no clip to play for that attack yet. looped defaults to false since every swing
--- clip is one-shot; Block is the only looped track (held for as long as Blocking lasts).
+-- Empty/unset ids just don't load a track. Block is the only looped track.
 local function loadTrack(animator: Animator, animId: string?, looped: boolean?): AnimationTrack?
 	if not animId or animId == "" then
 		return nil
@@ -40,15 +38,18 @@ local function setupCharacterAnimations(fsm, character)
 	local criticalTrack = loadTrack(animator, weaponAnims.Critical)
 	local flourishTrack = loadTrack(animator, weaponAnims.Flourish)
 	local blockTrack = loadTrack(animator, weaponAnims.Block, true)
+	local blockSuccessTrack = loadTrack(animator, weaponAnims.BlockSuccess)
 	local blockBreakTrack = loadTrack(animator, weaponAnims.BlockBreak)
 	local parryTrack = loadTrack(animator, weaponAnims.Parry)
 	local parrySuccessTrack = loadTrack(animator, weaponAnims.ParrySuccess)
 	local parriedTrack = loadTrack(animator, weaponAnims.Parried)
+	-- TEMP debug: equip/unequip + the looped combat-idle stance, until a real Inventory/Equip system exists.
+	local idleTrack = loadTrack(animator, weaponAnims.Idle, true)
+	local equipTrack = loadTrack(animator, weaponAnims.Equip)
+	local unequipTrack = loadTrack(animator, weaponAnims.Unequip)
 
-	-- Hit-reaction clips (see CombatStateDefs.Stunned) — alternated, not random, per weaponAnims.Hit's
-	-- own doc comment. hitCount is read off the raw config array rather than #hitTracks: loadTrack
-	-- returns nil for an empty/unset id, and a nil hole partway through a table makes Lua's # operator
-	-- unreliable, same reason loadedM1Tracks above never tries to derive a count from itself either.
+	-- Hit-reaction clips, alternated (not random). hitCount reads off the raw config array since a
+	-- nil hole from an empty/unset id makes # on hitTracks itself unreliable.
 	local hitTracks = {}
 	for step, animId in ipairs(weaponAnims.Hit) do
 		hitTracks[step] = loadTrack(animator, animId)
@@ -59,6 +60,12 @@ local function setupCharacterAnimations(fsm, character)
 	local currentTrack = nil
 
 	local stateChangedConnection = fsm.StateChanged:Connect(function(_oldState, newState)
+		-- The combat-idle stance is Action priority same as every other clip here, so it has to be
+		-- explicitly stopped before anything else plays or the two blend together.
+		if newState ~= CombatStateDefs.Idle and idleTrack and idleTrack.IsPlaying then
+			idleTrack:Stop(0.1)
+		end
+
 		if newState == CombatStateDefs.M1_Windup then
 			local attackType = ClientCombatState.AttackType or "M1"
 			if attackType == "RunningAttack" then
@@ -84,8 +91,8 @@ local function setupCharacterAnimations(fsm, character)
 				parryTrack:Play(0.05)
 			end
 		elseif newState == CombatStateDefs.Blocking then
-			-- Reached only via Parrying's window elapsing — cut the Parry one-shot and hand off to
-			-- the held Block loop.
+			-- Reached via Parrying's window elapsing (cut the Parry clip if still playing) or
+			-- directly from Idle on a whiff cooldown (no Parry clip played).
 			if parryTrack and parryTrack.IsPlaying then
 				parryTrack:Stop(0.1)
 			end
@@ -93,21 +100,24 @@ local function setupCharacterAnimations(fsm, character)
 				blockTrack:Play(0.1)
 			end
 		elseif newState == CombatStateDefs.BlockBreak then
-			-- Posture maxed out mid-block: cut the held Block loop and punch through with the
-			-- break's own one-shot instead of just letting Block keep looping underneath it.
+			-- Posture maxed out mid-block: cut the held loop and punch through with the break one-shot.
 			if blockTrack and blockTrack.IsPlaying then
 				blockTrack:Stop(0.1)
+			end
+			if parryTrack and parryTrack.IsPlaying then
+				parryTrack:Stop(0.1)
 			end
 			if blockBreakTrack then
 				blockBreakTrack:Play(0.05)
 			end
 		elseif newState == CombatStateDefs.Parried then
-			-- Getting parried can interrupt an in-progress swing (M1/Critical windup) the same way
-			-- BlockBreak interrupts a held Block loop above — cut whatever was playing and punch
-			-- through with the reaction's own one-shot instead.
+			-- Can interrupt an in-progress swing the same way BlockBreak interrupts Block above.
 			if currentTrack then
 				currentTrack:Stop(0.1)
 				currentTrack = nil
+			end
+			if parryTrack and parryTrack.IsPlaying then
+				parryTrack:Stop(0.1)
 			end
 			if parriedTrack then
 				parriedTrack:Play(0.05)
@@ -117,35 +127,25 @@ local function setupCharacterAnimations(fsm, character)
 				currentTrack:Stop(0.1)
 				currentTrack = nil
 			end
-			-- Releasing Block/Parry normally (not via BlockBreak, which already stopped Block above)
 			if blockTrack and blockTrack.IsPlaying then
 				blockTrack:Stop(0.1)
 			end
 			if parryTrack and parryTrack.IsPlaying then
 				parryTrack:Stop(0.1)
 			end
+			if ClientCombatState.IsEquipped and idleTrack then
+				idleTrack:Play(0.1)
+			end
 		elseif newState == CombatStateDefs.Feint and currentTrack then
-			-- Feint cuts the windup clip short the same way reaching Idle does — otherwise the punch
-			-- would keep visibly playing out through the feint's recovery, defeating the entire point
-			-- of canceling it.
+			-- Cut the windup clip short, same as reaching Idle does.
 			currentTrack:Stop(0.1)
 			currentTrack = nil
 		end
 	end)
 
-	-- ParrySuccess/HitReaction are fire-and-forget cosmetic-only (see
-	-- CombatStateService.notifyParrySuccess/notifyHitReaction) — neither has an FSM state of its own
-	-- to hang off the stateChangedConnection switch above. ParrySuccess: the defender's FSM already
-	-- went back to Idle via a separate ForceState just before this arrives (same remote, so delivery
-	-- order is preserved), so this only needs to cut the readying Parry pose short if it's somehow
-	-- still playing and punch through with the success one-shot. HitReaction: unlike ParrySuccess,
-	-- this fires on EVERY landed hit, including a second combo hit landing while you're STILL
-	-- Stunned from the first — forceState's own same-state guard means that refresh case never
-	-- re-fires StateChanged (see ClientCombatState's pendingStunDuration handling), so a Stunned
-	-- branch in the switch above would only ever catch the first hit of a combo, not each one. This
-	-- is deliberately the single place hit-reaction animation gets triggered from, precisely so
-	-- every landed hit flinches you once, not zero or two times depending on whether the FSM state
-	-- actually changed.
+	-- ParrySuccess/HitReaction are fire-and-forget cosmetic pings with no FSM state of their own.
+	-- HitReaction fires on every landed hit (including a same-state refresh mid-combo, which never
+	-- re-fires StateChanged), so it's the one place hit-reaction animation is ever triggered from.
 	local CombatIntent = RemoteRegistry.getEvent("CombatIntent")
 	local combatCosmeticConnection = CombatIntent.OnClientEvent:Connect(function(action)
 		if action == "ParrySuccess" then
@@ -155,11 +155,13 @@ local function setupCharacterAnimations(fsm, character)
 			if parrySuccessTrack then
 				parrySuccessTrack:Play(0.05)
 			end
+		elseif action == "BlockSuccess" then
+			-- Doesn't touch blockTrack: it's still looping underneath, this just plays on top.
+			if blockSuccessTrack then
+				blockSuccessTrack:Play(0.05)
+			end
 		elseif action == "HitReaction" then
-			-- A hit landing from behind bypasses Blocking/Parrying entirely (see
-			-- HitRegistrationService's isAttackerInFront check), so this can interrupt any of
-			-- currentTrack/blockTrack/parryTrack depending on what the victim happened to be doing —
-			-- not just an in-progress swing the way the Parried branch above only ever needs to.
+			-- A hit from behind bypasses Blocking/Parrying entirely, so this can interrupt any of them.
 			if currentTrack then
 				currentTrack:Stop(0.1)
 				currentTrack = nil
@@ -179,12 +181,43 @@ local function setupCharacterAnimations(fsm, character)
 		end
 	end)
 
+	-- TEMP debug: equip toggle has its own signal since it isn't a CombatStateDefs state transition.
+	-- Only fires while fsm.CurrentState is Idle (see ClientCombatState.setEquipped's own gate).
+	local equipChangedConnection = ClientCombatState.EquipChanged:Connect(function(isEquippedNow)
+		if isEquippedNow then
+			if equipTrack then
+				equipTrack:Play(0.05)
+				equipTrack.Stopped:Once(function()
+					if ClientCombatState.IsEquipped and fsm.CurrentState == CombatStateDefs.Idle and idleTrack then
+						idleTrack:Play(0.1)
+					end
+				end)
+			elseif idleTrack then
+				idleTrack:Play(0.1)
+			end
+		else
+			if idleTrack and idleTrack.IsPlaying then
+				idleTrack:Stop(0.1)
+			end
+			if unequipTrack then
+				unequipTrack:Play(0.05)
+			end
+		end
+	end)
+
+	-- Fists start equipped by default (see ClientCombatState.IsEquipped) — EquipChanged only fires on
+	-- a manual toggle, so the initial idle stance has to be kicked off here instead.
+	if ClientCombatState.IsEquipped and idleTrack and fsm.CurrentState == CombatStateDefs.Idle then
+		idleTrack:Play(0.1)
+	end
+
 	local cleaned = false
 	local function cleanup()
 		if cleaned then return end
 		cleaned = true
 		stateChangedConnection:Disconnect()
 		combatCosmeticConnection:Disconnect()
+		equipChangedConnection:Disconnect()
 	end
 
 	humanoid.Died:Once(cleanup)

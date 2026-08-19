@@ -9,12 +9,11 @@ local MovementConstants = require(ReplicatedStorage.Shared.Movement.MovementCons
 
 local AnimationController = {}
 
--- 1. Standard Movement Animations
 local ANIMATION_IDS = {
 	[MovementStateDefs.Idle] = "rbxassetid://100161560231153",
 	[MovementStateDefs.Walking] = "rbxassetid://71563071935374",
 	[MovementStateDefs.Running] = "rbxassetid://88091162849923",
-	[MovementStateDefs.Sprinting] = "rbxassetid://115737519957403", -- placeholder; replace with a dedicated Qinggong sprint animation
+	[MovementStateDefs.Sprinting] = "rbxassetid://115737519957403", -- placeholder
 	[MovementStateDefs.Crouching] = "rbxassetid://103866147082035",
 	[MovementStateDefs.CrouchWalking] = "rbxassetid://74749735884197",
 	[MovementStateDefs.Sliding] = "rbxassetid://122916678970923",
@@ -24,13 +23,13 @@ local ANIMATION_IDS = {
 
 	[MovementStateDefs.WallHanging] = "rbxassetid://132023512277724",
 	[MovementStateDefs.WallBoost] = "rbxassetid://113152742747545",
-	[MovementStateDefs.WallClingDoubleJump] = "rbxassetid://129166635501691", -- placeholder; swap in the real WallClingDoubleJump animation ID
+	[MovementStateDefs.WallClingDoubleJump] = "rbxassetid://129166635501691", -- placeholder
 	[MovementStateDefs.LedgeJumping] = "rbxassetid://137786735677269",
 	[MovementStateDefs.LightLanding] = "rbxassetid://133945243946271",
 	[MovementStateDefs.HeavyLanding] = "rbxassetid://105831901844953",
 	[MovementStateDefs.TreeStanding] = "rbxassetid://77063033039332",
-	[MovementStateDefs.TreeJumping] = "rbxassetid://107506759721244", -- placeholder; borrowed AirDashing's ID until a dedicated Tree Jump launch animation is ready
-	[MovementStateDefs.TreeLaunching] = "rbxassetid://91226696181691", -- placeholder; borrowed WallBoost's ID until a dedicated Tree Launch animation is ready
+	[MovementStateDefs.TreeJumping] = "rbxassetid://107506759721244", -- placeholder
+	[MovementStateDefs.TreeLaunching] = "rbxassetid://91226696181691", -- placeholder
 
 	WallLatch = "rbxassetid://115846143777391",
 	WallRunLeft = "rbxassetid://81326452444822",
@@ -40,15 +39,9 @@ local ANIMATION_IDS = {
 	DoubleJump1 = "rbxassetid://105731615843957",
 	DoubleJump2 = "rbxassetid://109908788558574",
 
-	-- Second TreeStanding land pose, randomly picked 50/50 against MovementStateDefs.TreeStanding's
-	-- own entry above, same "DoubleJump1/DoubleJump2" pattern.
-	TreeStanding2 = "rbxassetid://114060022362060", -- placeholder; swap in your second TreeStanding land animation
-	-- One-shot overlay played periodically while resting in TreeStanding (see startTreeIdleFidget
-	-- below) — small head-movement fidget, layered on TOP of the looping base pose the same way
-	-- WallLatch layers on top of WallHanging.
-	TreeIdleFidget = "rbxassetid://105547805956367", -- placeholder; swap in your head-movement idle fidget animation
+	TreeStanding2 = "rbxassetid://114060022362060", -- placeholder
+	TreeIdleFidget = "rbxassetid://105547805956367", -- placeholder
 
-	-- Directional Walk Animations (8-way) 
 	WalkForward = "rbxassetid://94798501873440",
 	WalkFrontRight = "rbxassetid://111875231717111",
 	WalkRight = "rbxassetid://138304500693640",
@@ -59,7 +52,6 @@ local ANIMATION_IDS = {
 	WalkFrontLeft = "rbxassetid://129685547745709",
 }
 
--- 2. Directional Dash Animations
 local DASH_ANIMATION_IDS = {
 	DashFront = "rbxassetid://80647979865669",
 	DashBack = "rbxassetid://102072453640654",
@@ -67,16 +59,11 @@ local DASH_ANIMATION_IDS = {
 	DashRight = "rbxassetid://109325396920599",
 }
 
--- Played instead of the target state's normal animation when a Dash is cut short via DodgeCancel
--- (right-click mid-dash — see ClientMovementState's DodgeCancel binding). Only two clips exist;
--- Front/Back cancels reuse one of these two picked at random (see classifyMoveDirection below) —
--- deliberate, not a placeholder gap, per how the feature was scoped.
 local DODGE_CANCEL_ANIMATION_IDS = {
-	DodgeCancelLeft = "rbxassetid://133915887345026", -- placeholder; swap in the real DodgeCancelLeft animation ID
-	DodgeCancelRight = "rbxassetid://84186527862482", -- placeholder; swap in the real DodgeCancelRight animation ID
+	DodgeCancelLeft = "rbxassetid://133915887345026", -- placeholder
+	DodgeCancelRight = "rbxassetid://84186527862482", -- placeholder
 }
 
--- Lean Constants
 local MAX_LEAN_STRAFE = math.rad(MovementConstants.LeanMaxAngleDegrees)
 local MAX_LEAN_FORWARD = math.rad(MovementConstants.LeanMaxAngleDegrees)
 local LEAN_SPEED = MovementConstants.LeanSpeed
@@ -89,16 +76,13 @@ local function getRootJoint(character)
 	return nil
 end
 
--- includeLean is false for remote characters: the per-frame procedural lean is a local-feel
--- polish detail, not worth a RenderStepped connection per visible player on top of the state-
--- driven animation dispatch below (which is event-based and effectively free at any player count)
+-- includeLean false for remote characters — procedural lean is local-feel only.
 local function setupCharacterAnimations(fsm, character, includeLean)
 	local humanoid = character:WaitForChild("Humanoid")
 	local animator = humanoid:WaitForChild("Animator")
 	local hrp = character:WaitForChild("HumanoidRootPart")
 	local rootJoint = getRootJoint(character)
 
-	-- Setup RaycastParams to ignore the player's body
 	local rayParams = RaycastParams.new()
 	rayParams.FilterType = Enum.RaycastFilterType.Exclude
 	rayParams.FilterDescendantsInstances = {character}
@@ -116,33 +100,26 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 	local currentRoll = 0
 	local currentPitch = 0
 
-	-- 3. Preload Standard Tracks
 	for stateName, animId in pairs(ANIMATION_IDS) do
 		local anim = Instance.new("Animation")
 		anim.AnimationId = animId
 		local track = animator:LoadAnimation(anim)
 
-		-- Only loop tracks that aren't jumps, boosts, impacts, or air dashes!
 		if stateName == MovementStateDefs.Jumping or stateName == "DoubleJump1" or stateName == "DoubleJump2" or stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.AirDashing or stateName == MovementStateDefs.WallBoost or stateName == MovementStateDefs.WallClingDoubleJump or stateName == "WallLatch" or stateName == "WallLeapLeft" or stateName == "WallLeapRight" or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding or stateName == MovementStateDefs.TreeJumping or stateName == MovementStateDefs.TreeLaunching or stateName == "TreeIdleFidget" then
 			track.Looped = false
 		else
 			track.Looped = true
 		end
 
-		-- Force Priorities to avoid Roblox default script bleeding
 		if stateName == MovementStateDefs.LedgeJumping or stateName == MovementStateDefs.LightLanding or stateName == MovementStateDefs.HeavyLanding or stateName == MovementStateDefs.AirDashing or stateName == MovementStateDefs.WallClingDoubleJump or stateName == MovementStateDefs.TreeJumping or stateName == MovementStateDefs.TreeLaunching or stateName == "TreeIdleFidget" then
 			track.Priority = Enum.AnimationPriority.Action
 		else
-			-- Forces standard movement (Walk/Run/Idle) to dominate Roblox defaults
 			track.Priority = Enum.AnimationPriority.Movement
 		end
 
 		loadedTracks[stateName] = track
 	end
 
-	-- 4. Preload Dash Tracks (Ensure these DO NOT loop) — DodgeCancel clips share the same table
-	-- (and therefore the same stopOldState sweep + final cleanup below) since they're the same
-	-- family of short, one-shot, Action-priority dash-related overlays.
 	for dirName, animId in pairs(DASH_ANIMATION_IDS) do
 		local anim = Instance.new("Animation")
 		anim.AnimationId = animId
@@ -164,9 +141,6 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 		loadedTracks[fsm.CurrentState]:Play()
 	end
 
-	-- Shared by playDashing (which direction did the dash launch in) and the DodgeCancel handler
-	-- below (which direction to cancel out toward) — same camera/facing-relative classification
-	-- either way, just used to pick between a different pair of clips.
 	local function classifyMoveDirection(moveVector: Vector3): string
 		if moveVector.Magnitude <= 0.1 then
 			return "Back"
@@ -181,28 +155,12 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 		return rightDot > 0 and "Right" or "Left"
 	end
 
-	-- 5. Handle State Transitions
 	local function stopOldState(oldState, newState)
-		-- ALWAYS STOP THE OLD STATE FIRST
 		if oldState == MovementStateDefs.Dashing then
 			for _, track in pairs(loadedDashTracks) do
 				if track.IsPlaying then track:Stop(0.2) end
 			end
 
-			-- DodgeCancel: only two clips exist (Left/Right), so a Front/Back-classified cancel
-			-- picks between them at random — same "doesn't matter which" 50/50 pattern
-			-- playDoubleJumping/playTreeStanding already use elsewhere in this file. Read off
-			-- current input at the moment of cancellation, not whatever direction the dash
-			-- originally launched in — feels more responsive since you're canceling INTO wherever
-			-- you're steering now, not replaying the dash's stale original heading.
-			--
-			-- includeLean-gated: ClientMovementState.DodgeCancelled only ever reflects the LOCAL
-			-- player's own input, but this function also runs once per remote player (includeLean
-			-- false, driven by RemoteMovementState.FSMReady) to animate everyone else's characters —
-			-- without this guard, a remote player's Dashing ending naturally could get misread as
-			-- THIS client's own dodge cancel if the timing happened to line up. Remote players just
-			-- play their normal dash-end animation for now; replicating dodge cancel's animation to
-			-- observers isn't wired up yet.
 			if includeLean and ClientMovementState.DodgeCancelled then
 				ClientMovementState.DodgeCancelled = false
 
@@ -218,40 +176,26 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 				end
 			end
 		elseif loadedTracks[oldState] then
-			-- Do not instantly stop the Jump, LedgeJump, or TreeLaunch animation if transitioning
-			-- into a Fall. TreeLaunching now transitions to Falling the instant real Freefall
-			-- fires (see ClientMovementState), which can land well before its one-shot animation
-			-- would naturally finish — cutting it off here made the launch look clipped. It's
-			-- Action priority (see the loop above) so it already visually dominates Falling's own
-			-- Movement-priority loop until it finishes on its own and Falling shows through.
+			-- Don't cut Jump/LedgeJump/TreeLaunch short when transitioning into Falling; let the one-shot finish.
 			if not ((oldState == MovementStateDefs.Jumping or oldState == MovementStateDefs.LedgeJumping or oldState == MovementStateDefs.TreeLaunching) and newState == MovementStateDefs.Falling) then
 				loadedTracks[oldState]:Stop(0.1)
 			end
 		end
 
-		-- Specifically clean up the WallLatch impact animation if we leave the wall early
 		if oldState == MovementStateDefs.WallHanging and loadedTracks.WallLatch then
 			loadedTracks.WallLatch:Stop(0.1)
 		end
 
-		-- Specifically clean up WallRun directional animations when we fall or jump off
 		if oldState == MovementStateDefs.WallRunning then
 			if loadedTracks.WallRunLeft then loadedTracks.WallRunLeft:Stop(0.1) end
 			if loadedTracks.WallRunRight then loadedTracks.WallRunRight:Stop(0.1) end
 		end
 
-		-- Specifically clean up TreeStanding's second land-pose option and the idle fidget
-		-- overlay when we leave early. loadedTracks[oldState] above only ever targets the FIRST
-		-- of the two randomly-picked poses (MovementStateDefs.TreeStanding itself); TreeStanding2
-		-- needs its own stop if that was the one actually chosen. The fidget is a separate
-		-- layered one-shot that can be mid-playback (e.g. launching off mid-head-turn).
 		if oldState == MovementStateDefs.TreeStanding then
 			if loadedTracks.TreeStanding2 then loadedTracks.TreeStanding2:Stop(0.1) end
 			if loadedTracks.TreeIdleFidget then loadedTracks.TreeIdleFidget:Stop(0.1) end
 		end
 
-		-- Directional walking only runs while actually in Walking — kill the MoveDirection
-		-- listener and whichever directional track is active the instant we leave it
 		if newState ~= MovementStateDefs.Walking then
 			if walkDirectionConnection then
 				walkDirectionConnection:Disconnect()
@@ -274,7 +218,6 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 	end
 
 	local function playWallHanging()
-		-- LAYERED ANIMATION TRICK: Play the idle loop AND the heavy impact simultaneously!
 		if loadedTracks[MovementStateDefs.WallHanging] then
 			loadedTracks[MovementStateDefs.WallHanging]:Play(0.1)
 		end
@@ -284,7 +227,6 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 	end
 
 	local function playWallRunning()
-		-- Dynamically check which side the wall is on with RaycastParams
 		local rightRay = workspace:Raycast(hrp.CFrame.Position, hrp.CFrame.RightVector * MovementConstants.WallSideRayDistance, rayParams)
 		if rightRay then
 			if loadedTracks.WallRunRight then loadedTracks.WallRunRight:Play(0.1) end
@@ -294,10 +236,6 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 	end
 
 	local function playWallLeaping()
-		-- Dynamically check which side the wall WAS on with RaycastParams. Same distance
-		-- MovementPhysicsController.handleWallLeaping uses to find the wall in the first place
-		-- (MovementConstants.WallLeapRayLength) — a shorter ray here could disagree with physics
-		-- on which side the wall was actually on and play the mirrored animation.
 		local rightRay = workspace:Raycast(hrp.CFrame.Position, hrp.CFrame.RightVector * MovementConstants.WallLeapRayLength, rayParams)
 		if rightRay then
 			if loadedTracks.WallLeapRight then loadedTracks.WallLeapRight:Play(0.05) end
@@ -314,9 +252,6 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 		end
 	end
 
-	-- Same 50/50 random pick as playDoubleJumping, just between MovementStateDefs.TreeStanding
-	-- and its TreeStanding2 counterpart — stopOldState above handles cleaning up whichever one
-	-- was actually chosen once TreeStanding ends.
 	local function playTreeStanding()
 		local trackName = math.random(1, 2) == 1 and MovementStateDefs.TreeStanding or "TreeStanding2"
 		local track = loadedTracks[trackName]
@@ -325,12 +260,6 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 		end
 	end
 
-	-- Periodic idle fidget while resting in TreeStanding: a small head-movement one-shot, layered
-	-- on top of the looping base pose the same way playWallHanging layers WallLatch on top of
-	-- WallHanging. Self-reschedules via task.delay (Luau has no repeating-interval primitive) —
-	-- tracked in treeIdleFidgetTask so a state change out of TreeStanding can task.cancel it
-	-- instead of leaving an orphaned timer chain running forever against a character that's since
-	-- moved on, per the guide's GC-defense rule.
 	local treeIdleFidgetTask = nil
 
 	local function stopTreeIdleFidget()
@@ -341,7 +270,7 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 	end
 
 	local function startTreeIdleFidget()
-		stopTreeIdleFidget() -- guard against double-starting if this somehow fires twice in a row
+		stopTreeIdleFidget()
 
 		local function scheduleNext()
 			treeIdleFidgetTask = task.delay(MovementConstants.TreeIdleFidgetInterval, function()
@@ -355,9 +284,6 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 		scheduleNext()
 	end
 
-	-- Swaps between 8 directional walk tracks based on camera-relative input, instead of a
-	-- single generic walk loop. angle is measured from the character's forward axis: 0 = dead
-	-- ahead, +90 = strafing right, ±180 = walking backward. Bucketed into eight 45-degree wedges.
 	local WALK_DIRECTION_KEYS = {
 		"WalkForward", "WalkFrontRight", "WalkRight", "WalkBackRight",
 		"WalkBack", "WalkBackLeft", "WalkLeft", "WalkFrontLeft",
@@ -371,11 +297,9 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 		local forwardDot = hrp.CFrame.LookVector:Dot(moveDir)
 		local angle = math.deg(math.atan2(rightDot, forwardDot))
 
-		-- Shift by half a wedge so each key covers angle-22.5 .. angle+22.5, then bucket
 		local wedgeIndex = math.floor(((angle + 22.5) % 360) / 45) + 1
 		local targetAnimKey = WALK_DIRECTION_KEYS[wedgeIndex]
 
-		-- Only swap tracks if the resolved direction actually changed
 		if currentWalkAnim ~= targetAnimKey then
 			if currentWalkAnim and loadedTracks[currentWalkAnim] then
 				loadedTracks[currentWalkAnim]:Stop(0.2)
@@ -390,16 +314,10 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 	end
 
 	local function playWalking()
-		-- Runs every frame rather than on MoveDirection-changed: MoveDirection is a fixed
-		-- camera-relative world vector that doesn't update as AutoRotate turns hrp.CFrame
-		-- to face it, so a change-signal alone would leave the dot product (and therefore
-		-- the animation) stuck at whatever it read the instant the key was first pressed.
-		-- The currentWalkAnim ~= targetAnimKey guard above already keeps this cheap.
 		walkDirectionConnection = RunService.RenderStepped:Connect(updateWalkDirection)
 	end
 
 	local function playDefault(newState)
-		-- Play standard animation (Jumping, Falling, AirDashing, WallBoost, Sliding, etc.)
 		if loadedTracks[newState] then
 			loadedTracks[newState]:Play(0.1)
 		end
@@ -424,26 +342,13 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 		else
 			playDefault(newState)
 		end
-
-		-- Disabled for now: TreeStanding auto-launches after a brief beat
-		-- (MovementConstants.TreeStandBriefPauseDuration) instead of being a real rest stop, so
-		-- this would basically never get a chance to play. Commented out, not deleted, in case
-		-- TreeStanding becomes a rest stop again later — startTreeIdleFidget/stopTreeIdleFidget
-		-- are still fully defined above.
-		-- if newState == MovementStateDefs.TreeStanding then
-		-- 	startTreeIdleFidget()
-		-- elseif oldState == MovementStateDefs.TreeStanding then
-		-- 	stopTreeIdleFidget()
-		-- end
 	end)
 
-	-- 6. Handle Procedural Rig Manipulation (Leaning) — local player only, see includeLean above
 	if includeLean and rootJoint then
 		renderConnection = RunService.RenderStepped:Connect(function(dt)
 			local moveDir = humanoid.MoveDirection
 			local targetRoll, targetPitch = 0, 0
 
-			-- 1. Reset if not moving
 			if moveDir.Magnitude < 0.05 and math.abs(currentRoll) < 0.001 and math.abs(currentPitch) < 0.001 then
 				if currentRoll ~= 0 or currentPitch ~= 0 then
 					currentRoll, currentPitch = 0, 0
@@ -452,20 +357,16 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 				return
 			end
 
-			-- 2. THE FIX: Only calculate lean if we are NOT on a wall
 			if moveDir.Magnitude > 0.05 then
 				if fsm.CurrentState == MovementStateDefs.WallRunning or fsm.CurrentState == MovementStateDefs.WallHanging then
-					-- Force upright posture so the wall-run animation stays flat against the surface
 					targetRoll, targetPitch = 0, 0
 				else
-					-- Standard Ground Leaning
 					local localDir = hrp.CFrame:VectorToObjectSpace(moveDir)
 					targetRoll = -localDir.X * MAX_LEAN_STRAFE
 					targetPitch = -localDir.Z * MAX_LEAN_FORWARD
 				end
 			end
 
-			-- Apply smoothing and set the C0
 			local alpha = 1 - math.exp(-LEAN_SPEED * dt)
 			currentRoll = currentRoll + (targetRoll - currentRoll) * alpha
 			currentPitch = currentPitch + (targetPitch - currentPitch) * alpha
@@ -474,8 +375,6 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 		end)
 	end
 
-	-- 7. Unified Garbage Collection — Died covers the normal case, AncestryChanged is the
-	-- fallback for any character removal that doesn't go through Humanoid death (resets, etc.)
 	local cleaned = false
 	local function cleanup()
 		if cleaned then return end

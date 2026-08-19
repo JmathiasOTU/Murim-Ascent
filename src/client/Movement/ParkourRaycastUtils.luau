@@ -26,8 +26,7 @@ function ParkourRaycastUtils.checkWallCling(hrp, rayParams)
 	return false
 end
 
--- Same three-ray check as checkWallCling but non-mutating (no CFrame snap) — used every parkour
--- tick to confirm we're still pressed against a wall while WallHanging, not just at grab time.
+-- Same as checkWallCling but non-mutating, used every tick to confirm still clinging.
 function ParkourRaycastUtils.checkStillClinging(hrp, rayParams)
 	local origin = hrp.CFrame.Position
 	local look = hrp.CFrame.LookVector

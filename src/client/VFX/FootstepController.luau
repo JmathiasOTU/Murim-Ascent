@@ -9,15 +9,15 @@ local FootstepSoundData = require(script.Parent.FootstepSoundData)
 
 local FootstepController = {}
 
-local FOOTSTEP_GROUND_CHECK_DISTANCE = 5 -- studs; how far down from HumanoidRootPart to sample the floor material
-local WALK_STEP_INTERVAL = 0.5 -- seconds between steps while Walking/CrouchWalking
-local RUN_STEP_INTERVAL = 0.3 -- seconds between steps while Running
-local CROUCH_STEP_INTERVAL = 0.6 -- seconds between steps while CrouchWalking
+local FOOTSTEP_GROUND_CHECK_DISTANCE = 5
+local WALK_STEP_INTERVAL = 0.5
+local RUN_STEP_INTERVAL = 0.3
+local CROUCH_STEP_INTERVAL = 0.6
 local FOOTSTEP_SOUND_CLEANUP_TIME = 2
 local FOOTSTEP_PIECE_CLEANUP_TIME = 1
-local FOOTSTEP_PITCH_VARIANCE = 0.1 -- +/- 10% playback speed randomization
-local FOOTSTEP_PIECE_SIDE_OFFSET = 0.5 -- studs left/right of center, alternated per step
-local FOOTSTEP_PIECE_DOWN_OFFSET = 3 -- studs below HumanoidRootPart the footstep piece is placed at
+local FOOTSTEP_PITCH_VARIANCE = 0.1
+local FOOTSTEP_PIECE_SIDE_OFFSET = 0.5
+local FOOTSTEP_PIECE_DOWN_OFFSET = 3
 
 local MOVING_ON_GROUND_STATES = {
 	[MovementStateDefs.Walking] = true,
@@ -25,9 +25,7 @@ local MOVING_ON_GROUND_STATES = {
 	[MovementStateDefs.CrouchWalking] = true,
 }
 
--- Alternates which foot's piece VFX plays next — shared across the whole client session rather
--- than reset per character, since it's a purely cosmetic left/right alternation with no
--- correctness implications either way.
+-- Shared across the whole client session, purely cosmetic left/right alternation.
 local currentLeg = 1
 
 local function playFootstepVFX(hrp: BasePart, materialName: string)
@@ -40,7 +38,6 @@ local function playFootstepVFX(hrp: BasePart, materialName: string)
 	sfx.Parent = hrp
 	sfx:Play()
 
-	-- Simplified GC: rely entirely on Debris rather than the fragile .Ended event
 	Debris:AddItem(sfx, FOOTSTEP_SOUND_CLEANUP_TIME)
 
 	local assets = ReplicatedStorage:FindFirstChild("Assets")
@@ -87,13 +84,10 @@ function FootstepController.start()
 		local lastStepTime = 0
 
 		local function processFootsteps()
-			-- Guard against tiny analog stick deadzones
 			if humanoid.MoveDirection.Magnitude <= 0.1 then return end
 
-			-- The movement FSM stays in Running for the whole RunningAttack swing (only the combat
-			-- side root-locks actual velocity — see ClientCombatState.performRunningAttackDash), so
-			-- without this, held Run+Forward keeps ticking out footstep SFX/VFX at the normal cadence
-			-- while the character is visibly stuck in place mid-swing.
+			-- The movement FSM stays in Running through a RunningAttack swing even though the combat
+			-- side root-locks actual velocity, so skip steps while that lock is active.
 			if ClientCombatState.MovementLocked then return end
 
 			local now = os.clock()
@@ -108,8 +102,6 @@ function FootstepController.start()
 			if now - lastStepTime < gap then return end
 			lastStepTime = now
 
-			-- Dynamically update the filter every step so it always ignores the Effects folder,
-			-- even if the folder was created after the game started.
 			local effectsFolder = workspace:FindFirstChild("Effects")
 			local filterList = {character}
 			if effectsFolder then
@@ -126,8 +118,6 @@ function FootstepController.start()
 		local stateConnection = fsm.StateChanged:Connect(function(_oldState, newState)
 			if MOVING_ON_GROUND_STATES[newState] then
 				if not footstepConnection then
-					-- Reset the step timer when waking up from Idle so the first step waits a full
-					-- gap (matching the animation) instead of firing immediately.
 					lastStepTime = os.clock()
 					footstepConnection = RunService.RenderStepped:Connect(processFootsteps)
 				end
@@ -139,8 +129,6 @@ function FootstepController.start()
 			end
 		end)
 
-		-- Died covers the normal case; AncestryChanged is the fallback for any character removal
-		-- that doesn't go through Humanoid death (resets, hub teleports, etc.)
 		local cleaned = false
 		local function cleanup()
 			if cleaned then return end
