@@ -63,11 +63,16 @@ local RECOVERY_DURATIONS = {
 	[CombatStateDefs.ParryRecovery] = ParryStats.RecoveryTime,
 }
 
--- Holding guard shares the same WalkSpeed/JumpPower freeze as the hard-stuns, just with no fixed
--- duration to schedule a revert off of — released by a local transition or a server push instead.
-local GUARD_WALK_LOCK_STATES = {
-	[CombatStateDefs.Parrying] = true,
-	[CombatStateDefs.Blocking] = true,
+-- Movement-lock states with no fixed duration to schedule a revert off of — released by a local
+-- transition or a server push instead of a timer, unlike the hard-stuns above. Each carries its own
+-- WalkSpeed/JumpPower pin: Parrying/Blocking share the guard hold's crawl; Critical_Windup gets a
+-- full root, since it's a fully committed swing (no Feint out of it) — letting the caster freely
+-- reposition mid-windup would make the Perilous telegraph above their head pointless.
+local GUARD_HOLD_LOCK = { WalkSpeed = BlockStats.WalkSpeed, JumpPower = BlockStats.JumpPower }
+local WALK_LOCK_STATES = {
+	[CombatStateDefs.Parrying] = GUARD_HOLD_LOCK,
+	[CombatStateDefs.Blocking] = GUARD_HOLD_LOCK,
+	[CombatStateDefs.Critical_Windup] = { WalkSpeed = 0, JumpPower = 0 },
 }
 
 -- Named traversal abilities a swing shouldn't interrupt or start out of; ordinary WASD/jump/fall stay swingable.
@@ -215,8 +220,18 @@ function ClientCombatState.start()
 		local lastCriticalTime = 0
 		local lastRunningAttackTime = 0
 		local lastAerialAttackTime = 0
-		-- When the last Parrying window closed with nothing landed, checked against ParryStats.WhiffCooldown.
-		local lastParryWhiffTime = -math.huge
+		-- When the last Parrying window was ATTEMPTED (F pressed), not when it whiffed — checked
+		-- against ParryStats.WhiffCooldown in startParrying(). Recording this on the attempt itself
+		-- (rather than only on a natural window timeout) is what stops rapid F-tapping from bypassing
+		-- the cooldown entirely: releasing F early used to skip the whiff-timeout callback that was
+		-- the only place this got set, so cooldown never actually applied. Reset to -math.huge (i.e.
+		-- immediately off cooldown) the instant a parry lands — see the ParrySuccess listener below.
+		local lastParryAttemptTime = -math.huge
+		-- True once the current Parrying window has landed at least one real parry — while true, the
+		-- window's own scheduleTask timeout does nothing (server-authoritative CombatStateService.
+		-- extendParryGrace owns ending it) and releasing F early doesn't cancel it either, since a
+		-- successful parry's AutoParryDuration grace is automatic, not contingent on still holding F.
+		local parriedSuccessfully = false
 		-- When the last Feint actually fired, checked against FeintStats.Cooldown so it can't be chained every swing.
 		local lastFeintTime = -math.huge
 		-- release() from the current swing's movement lock, if any — Feint calls this to cut it short.
@@ -258,9 +273,10 @@ function ClientCombatState.start()
 			-- RECOVERY_DURATIONS' own scheduleTask, which a single elseif chain would prevent.
 			if hardStunDuration then
 				lockMovementForStun(humanoid, stunPropertyConnections, HARD_STUN_WALK_SPEEDS[newState])
-			elseif GUARD_WALK_LOCK_STATES[newState] then
-				lockMovementForStun(humanoid, stunPropertyConnections, BlockStats.WalkSpeed, BlockStats.JumpPower)
-			elseif HARD_STUN_DURATIONS[oldState] or GUARD_WALK_LOCK_STATES[oldState] then
+			elseif WALK_LOCK_STATES[newState] then
+				local lock = WALK_LOCK_STATES[newState]
+				lockMovementForStun(humanoid, stunPropertyConnections, lock.WalkSpeed, lock.JumpPower)
+			elseif HARD_STUN_DURATIONS[oldState] or WALK_LOCK_STATES[oldState] then
 				unlockMovementForStun(humanoid, stunPropertyConnections)
 			end
 
@@ -334,6 +350,28 @@ function ClientCombatState.start()
 				humanoid.WalkSpeed = BlockStats.WalkSpeed
 			elseif not HARD_STUN_DURATIONS[forcedState] then
 				restoreWalkSpeed(humanoid)
+			end
+		end)
+
+		-- Landed a real parry (see CombatStateService.notifyParrySuccess) — extends the local window
+		-- indefinitely (parriedSuccessfully gates the scheduleTask timeout above from acting) until the
+		-- server's own extendParryGrace timer eventually pushes ForceState(ParryRecovery), and resets
+		-- the cooldown so a manual re-press of F right after isn't gated by WhiffCooldown.
+		local parrySuccessConnection = CombatIntent.OnClientEvent:Connect(function(action)
+			if action ~= "ParrySuccess" then return end
+			if fsm.CurrentState ~= CombatStateDefs.Parrying then return end
+			parriedSuccessfully = true
+			lastParryAttemptTime = -math.huge
+		end)
+
+		-- F held through a dodge-cancel recovery (isMovementLocked() during RollCancelRecovering)
+		-- never got a retry — startParrying() silently no-ops on the movement lock and nothing else
+		-- was watching for it to clear, so the held F just got dropped instead of queueing. Same
+		-- retry pattern the StateChanged handler above already uses for the FSM-Idle case, just keyed
+		-- off movement's own signal since there's no combat FSM transition to hang it off here.
+		local rollCancelConnection = ClientMovementState.RollCancelChanged:Connect(function(isRecovering)
+			if not isRecovering and isBlockHeld then
+				startParrying()
 			end
 		end)
 
@@ -561,16 +599,18 @@ function ClientCombatState.start()
 			end)
 		end
 
-		-- F always opens on Parrying first: a brief timing window, not the sustained guard. A
-		-- front-facing hit landing during it is a true parry (zero damage, server-authoritative). If
-		-- the window closes with nothing landed and F is still held, it settles into Blocking.
+		-- F always opens on Parrying first: a brief timing window, not the sustained guard. A hit
+		-- landing during it is a true parry (zero damage, server-authoritative, omnidirectional — see
+		-- HitRegistrationService). If the window closes with nothing landed and F is still held, it
+		-- settles into Blocking.
 		function startParrying()
 			if fsm.CurrentState ~= CombatStateDefs.Idle then return end
 			if not isEquipped then return end
 			if isMovementLocked() then return end
 
-			-- Whiffed recently: skip straight to Blocking instead of a fresh Parrying window.
-			if os.clock() - lastParryWhiffTime < ParryStats.WhiffCooldown then
+			-- On cooldown from a recent ATTEMPT (see lastParryAttemptTime's own comment) — skip
+			-- straight to Blocking instead of a fresh Parrying window.
+			if os.clock() - lastParryAttemptTime < ParryStats.WhiffCooldown then
 				if not fsm:transition(CombatStateDefs.Blocking) then return end
 				print("Fist : Block")
 				humanoid.WalkSpeed = BlockStats.WalkSpeed
@@ -581,10 +621,17 @@ function ClientCombatState.start()
 
 			print("Fist : Parry")
 			humanoid.WalkSpeed = BlockStats.WalkSpeed
+			-- Cooldown starts now, on the attempt itself — NOT on a later whiff-timeout callback, which
+			-- an early F-release would skip entirely (see lastParryAttemptTime's own comment above).
+			lastParryAttemptTime = os.clock()
+			parriedSuccessfully = false
 
 			scheduleTask("CombatFlow", ParryStats.WindowTime, function()
 				if fsm.CurrentState ~= CombatStateDefs.Parrying then return end
-				lastParryWhiffTime = os.clock()
+				-- Landed at least one parry: CombatStateService.extendParryGrace owns the server-side
+				-- AutoParryDuration timer and will push the eventual ForceState(ParryRecovery) once it
+				-- actually ends — nothing to do locally but wait.
+				if parriedSuccessfully then return end
 				if isBlockHeld then
 					print("Fist : Block")
 					fsm:transition(CombatStateDefs.Blocking)
@@ -598,8 +645,12 @@ function ClientCombatState.start()
 		-- Blocking: front-facing hits are absorbed server-side at the cost of posture — this client
 		-- only owns the FSM/speed/animation, the actual absorption is server-authoritative.
 		local function stopBlocking()
-			-- Released before the window resolved either way — drop straight back to Idle.
 			if fsm.CurrentState == CombatStateDefs.Parrying then
+				-- A successful parry's AutoParryDuration grace runs regardless of whether F is still
+				-- held (see parriedSuccessfully's own comment) — releasing F here must not cut it short.
+				if parriedSuccessfully then return end
+
+				-- Released before the window resolved either way — drop straight back to Idle.
 				print("Fist : UnParry")
 				restoreWalkSpeed(humanoid)
 				fsm:transition(CombatStateDefs.Idle)
@@ -697,12 +748,13 @@ function ClientCombatState.start()
 			return Enum.ContextActionResult.Pass
 		end, false, Enum.ContextActionPriority.High.Value, Enum.KeyCode.Q)
 
-		-- Hard-stun/guard block: Space/Y are gated behind their own key press, so JumpPower alone
-		-- can't stop the scripted parkour abilities they trigger. Bound above ParkourSpacebar/TreeJump's
-		-- own High priority. Guard states included alongside the hard-stuns — holding guard means no jumping either.
+		-- Hard-stun/guard/Critical-windup block: Space/Y are gated behind their own key press, so
+		-- JumpPower alone can't stop the scripted parkour abilities they trigger. Bound above
+		-- ParkourSpacebar/TreeJump's own High priority. WALK_LOCK_STATES included alongside the
+		-- hard-stuns — a movement-locked state means no jumping either.
 		ContextActionService:BindActionAtPriority("CombatStunBlock", function(_actionName, inputState)
 			if inputState == Enum.UserInputState.Begin
-				and (HARD_STUN_DURATIONS[fsm.CurrentState] or GUARD_WALK_LOCK_STATES[fsm.CurrentState])
+				and (HARD_STUN_DURATIONS[fsm.CurrentState] or WALK_LOCK_STATES[fsm.CurrentState])
 			then
 				return Enum.ContextActionResult.Sink
 			end
@@ -726,6 +778,8 @@ function ClientCombatState.start()
 				debugChatConnection:Disconnect()
 			end
 			correctionConnection:Disconnect()
+			parrySuccessConnection:Disconnect()
+			rollCancelConnection:Disconnect()
 			for _, connection in pairs(stunPropertyConnections) do
 				connection:Disconnect()
 			end

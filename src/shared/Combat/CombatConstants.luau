@@ -21,11 +21,15 @@ return {
 
 	-- Weapon- and category-agnostic combat SFX — same clips regardless of what's equipped or its
 	-- WeaponCategoryDefs category, unlike WeaponCategorySFX (Hit/Block, which vary per category) and
-	-- WeaponTypes.WeaponSFX (Swing/Flourish, which vary per weapon). Named Sound instances live under
-	-- ReplicatedStorage.Assets.SFX.Combat.General — see VFXPlaybackController.getGeneralSFXFolder.
+	-- WeaponTypes.WeaponSFX (Swing/AerialSwing/Flourish/Critical, which vary per weapon). Named Sound
+	-- instances live under ReplicatedStorage.Assets.SFX.Combat.General — see
+	-- VFXPlaybackController.getGeneralSFXFolder.
 	SFX = {
 		Feint = { "Feint" },
-		Critical = { "Critical" }, -- Critical's landed-hit sound; not category-based like a plain M1's
+		-- Plays on EVERY Critical windup alongside the per-weapon whoosh (WeaponTypes.WeaponSFX.
+		-- Critical, e.g. Fists' CriticalFistSwing) — this is the shared layer every weapon gets on
+		-- top of its own, not a replacement for it.
+		Critical = { "Critical" },
 		Parry = { "Parry0", "Parry1", "Parry2" }, -- the DEFENDER's parry landing, regardless of either weapon
 		GuardBreak = { "GuardBreak" }, -- posture maxed out while Blocking, regardless of either weapon
 	},

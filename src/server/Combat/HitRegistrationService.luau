@@ -127,37 +127,41 @@ local function handleHitRequest(player: Player, action: string, data: { target: 
 	-- Parry/Block role plugs into the exact same logic a real player's does.
 	local targetCombatState = if targetPlayer then CombatStateService.getState(targetPlayer) else DummyCombatService.getState(targetCharacter)
 
-	-- Parrying: zero damage, and the ATTACKER gets forced into Parried while the target goes to
-	-- ParryRecovery (free to follow up after ParryStats.RecoveryTime, not instantly). Checked
-	-- before Blocking and before dedup registration for the same reason i-frames are.
+	-- Parrying: zero damage, and the ATTACKER gets forced into Parried while the target's own
+	-- Parrying window extends by ParryStats.AutoParryDuration (see extendParryGrace) — a further hit
+	-- landing inside that grace is validated as another parry, chaining; only once it elapses with
+	-- nothing further landing does the target actually drop to ParryRecovery. No facing check here
+	-- (unlike Blocking below) — a parry lands even on a hit from behind. Checked before Blocking and
+	-- before dedup registration for the same reason i-frames are.
 	if targetCombatState == CombatStateDefs.Parrying then
-		if isAttackerInFront(attackerHRP, targetHRP) then
-			print(string.format("%s PARRIED %s's %s!", targetCharacter.Name, player.Name, attackKindName))
+		print(string.format("%s PARRIED %s's %s!", targetCharacter.Name, player.Name, attackKindName))
 
-			if targetPlayer then
-				CombatStateService.forceState(targetPlayer, CombatStateDefs.ParryRecovery)
-				CombatStateService.notifyParrySuccess(targetPlayer)
-				CombatStateService.relievePosture(targetPlayer, weaponData.ParryStats.PostureRelief)
-			end
-			-- A Parry-role dummy never leaves Parrying — no recovery window to simulate.
-			CombatStateService.forceState(player, CombatStateDefs.Parried)
-
-			-- Punish shove: the ATTACKER gets pushed back along the parrier's facing, as if they
-			-- whiffed into a wall. Light by design — see Fists.ParryStats.KnockbackForce.
-			applyKnockback(
-				attackerHRP,
-				targetHRP.CFrame.LookVector,
-				weaponData.ParryStats.KnockbackForce,
-				weaponData.ParryStats.KnockbackDuration
-			)
-
-			if combatVisualsEvent then
-				-- Parry SFX is weapon-agnostic (CombatConstants.SFX.Parry), so no weaponName needed here.
-				combatVisualsEvent:FireAllClients("Parry", (attackerHRP.Position + targetHRP.Position) / 2)
-			end
-
-			return
+		if targetPlayer then
+			CombatStateService.extendParryGrace(targetPlayer, weaponData.ParryStats.AutoParryDuration)
+			CombatStateService.notifyParrySuccess(targetPlayer)
+			CombatStateService.relievePosture(targetPlayer, weaponData.ParryStats.PostureRelief)
 		end
+		-- A Parry-role dummy never leaves Parrying — no recovery window to simulate.
+		CombatStateService.forceState(player, CombatStateDefs.Parried)
+
+		-- Punish shove: the ATTACKER gets pushed back along the parrier's facing, as if they
+		-- whiffed into a wall. Light by design — see Fists.ParryStats.KnockbackForce.
+		applyKnockback(
+			attackerHRP,
+			targetHRP.CFrame.LookVector,
+			weaponData.ParryStats.KnockbackForce,
+			weaponData.ParryStats.KnockbackDuration
+		)
+
+		if combatVisualsEvent then
+			-- Parry SFX is weapon-agnostic (CombatConstants.SFX.Parry), so no weaponName needed here.
+			-- attackerCharacter rides along in the trailing slot VFXPlaybackController reads for the
+			-- GotParried wind effect, welded onto the attacker specifically.
+			local midpoint = (attackerHRP.Position + targetHRP.Position) / 2
+			combatVisualsEvent:FireAllClients("Parry", midpoint, nil, nil, nil, nil, attackerCharacter)
+		end
+
+		return
 	end
 
 	-- Blocking: absorbs the hit into posture instead of damage, only if the attacker is in front.

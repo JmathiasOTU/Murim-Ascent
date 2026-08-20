@@ -104,12 +104,17 @@ local function resolveDummyAttack(attackerHRP: BasePart, targetPlayer: Player)
 		return
 	end
 
-	if CombatStateService.getState(targetPlayer) == CombatStateDefs.Parrying and isAttackerInFront(attackerHRP, targetHRP) then
-		CombatStateService.forceState(targetPlayer, CombatStateDefs.ParryRecovery)
+	-- No facing check here (unlike Blocking below) — same as HitRegistrationService's own parry
+	-- branch, a parry lands even on a hit from behind.
+	if CombatStateService.getState(targetPlayer) == CombatStateDefs.Parrying then
+		CombatStateService.extendParryGrace(targetPlayer, weaponData.ParryStats.AutoParryDuration)
 		CombatStateService.notifyParrySuccess(targetPlayer)
 		CombatStateService.relievePosture(targetPlayer, weaponData.ParryStats.PostureRelief)
 		if combatVisualsEvent then
-			combatVisualsEvent:FireAllClients("Parry", (attackerHRP.Position + targetHRP.Position) / 2)
+			-- attackerHRP.Parent (the dummy Model) rides along for the GotParried wind effect — see
+			-- HitRegistrationService's own parry branch for the real-player equivalent.
+			local midpoint = (attackerHRP.Position + targetHRP.Position) / 2
+			combatVisualsEvent:FireAllClients("Parry", midpoint, nil, nil, nil, nil, attackerHRP.Parent)
 		end
 		return
 	end

@@ -23,6 +23,11 @@ ClientMovementState.DodgeCancelled = false
 -- playing, cleared when it ends — read by ClientCombatState.isMovementLocked so a swing/parry can't
 -- cut the recovery animation short.
 ClientMovementState.RollCancelRecovering = false
+-- Fires (isRecovering: boolean) on every RollCancelRecovering flip — lets ClientCombatState retry
+-- a swing/parry that was queued (buffered/isBlockHeld) while movement-locked, the same way it
+-- already retries off its own combat FSM reaching Idle. Movement has no combat-FSM state to hang
+-- that retry off, hence the dedicated signal instead of combat polling the flag every frame.
+ClientMovementState.RollCancelChanged = LemonSignal.new()
 
 function ClientMovementState.start()
 	local player = Players.LocalPlayer

@@ -1,6 +1,7 @@
 -- src/client/Movement/AnimationController.luau
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Debris = game:GetService("Debris")
 
 local ClientMovementState = require(script.Parent.ClientMovementState)
 local RemoteMovementState = require(script.Parent.RemoteMovementState)
@@ -8,6 +9,14 @@ local MovementStateDefs = require(ReplicatedStorage.Shared.Movement.MovementStat
 local MovementConstants = require(ReplicatedStorage.Shared.Movement.MovementConstants)
 
 local AnimationController = {}
+
+-- Lives under the weapon-agnostic combat SFX folder (alongside Critical/Parry/Feint) rather than
+-- SFX.Movement, since a dodge-cancel is a defensive combat maneuver even though it's driven by the
+-- movement FSM — matches where the sound asset was actually placed in Studio.
+local AssetsFolder = ReplicatedStorage:WaitForChild("Assets")
+local CombatSFXFolder = AssetsFolder:WaitForChild("SFX"):WaitForChild("Combat")
+local CombatGeneralSFXFolder = CombatSFXFolder:WaitForChild("General")
+local DASH_CANCEL_SOUND_CLEANUP_TIME = 3
 
 local ANIMATION_IDS = {
 	[MovementStateDefs.Idle] = "rbxassetid://100161560231153",
@@ -55,8 +64,8 @@ local ANIMATION_IDS = {
 local DASH_ANIMATION_IDS = {
 	DashFront = "rbxassetid://138725257049301",
 	DashBack = "rbxassetid://102072453640654",
-	DashLeft = "rbxassetid://132828332941984",
-	DashRight = "rbxassetid://109325396920599",
+	DashLeft = "rbxassetid://71868599597547",
+	DashRight = "rbxassetid://100695107244194",
 }
 
 local DODGE_CANCEL_ANIMATION_IDS = {
@@ -174,9 +183,21 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 				if cancelTrack then
 					cancelTrack:Play(0.05)
 					ClientMovementState.RollCancelRecovering = true
+					ClientMovementState.RollCancelChanged:Fire(true)
 					cancelTrack.Stopped:Once(function()
 						ClientMovementState.RollCancelRecovering = false
+						ClientMovementState.RollCancelChanged:Fire(false)
 					end)
+
+					local dashCancelSound = CombatGeneralSFXFolder:FindFirstChild("DashCancel")
+					if dashCancelSound then
+						local soundClone = dashCancelSound:Clone()
+						soundClone.Parent = hrp
+						soundClone:Play()
+						Debris:AddItem(soundClone, DASH_CANCEL_SOUND_CLEANUP_TIME)
+					else
+						warn("Missing DashCancel in ReplicatedStorage.Assets.SFX.Combat.General")
+					end
 				end
 			end
 		elseif loadedTracks[oldState] then

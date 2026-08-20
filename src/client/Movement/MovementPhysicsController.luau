@@ -49,11 +49,24 @@ function MovementPhysicsController.start()
 			-- Decays to whatever ground speed we were carrying (walk/run/sprint), not always WalkSpeed.
 			local targetEndSpeed = humanoid.WalkSpeed
 
+			-- Locked in from whatever's held the instant the dash starts (no input at all defaults to
+			-- a backstep, -LookVector) — the Heartbeat below only ever UPDATES this while input is
+			-- still actively held, letting you curve the dash by turning. It must never fall back to
+			-- -LookVector again mid-dash: releasing a held key (e.g. letting go of A right after
+			-- pressing Q+A) used to zero out MoveDirection and snap the dash into reverse every single
+			-- tick after that, instead of just continuing the direction it already had.
+			local initialMoveVector = humanoid.MoveDirection
+			local dashDirection = if initialMoveVector.Magnitude > MovementConstants.WalkThreshold
+				then initialMoveVector.Unit
+				else -hrp.CFrame.LookVector
+
 			steerConnection = RunService.Heartbeat:Connect(function()
 				if not constraintPool.velocity.Enabled then return end
 
 				local moveVector = humanoid.MoveDirection
-				local dashDirection = if moveVector.Magnitude > MovementConstants.WalkThreshold then moveVector.Unit else -hrp.CFrame.LookVector
+				if moveVector.Magnitude > MovementConstants.WalkThreshold then
+					dashDirection = moveVector.Unit
+				end
 
 				constraintPool.velocity.VectorVelocity = dashDirection * speedValue.Value
 			end)

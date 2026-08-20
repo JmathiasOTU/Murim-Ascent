@@ -10,6 +10,7 @@ local MovementConstants = require(ReplicatedStorage.Shared.Movement.MovementCons
 local RemoteRegistry = require(ReplicatedStorage.Shared.Net.RemoteRegistry)
 local WeaponRegistry = require(ReplicatedStorage.Shared.Combat.Weapons.WeaponRegistry)
 local WeaponCategorySFX = require(ReplicatedStorage.Shared.Combat.Weapons.WeaponCategorySFX)
+local WeaponCategoryDefs = require(ReplicatedStorage.Shared.Combat.Weapons.WeaponCategoryDefs)
 local CombatConstants = require(ReplicatedStorage.Shared.Combat.CombatConstants)
 
 local VFXPlaybackController = {}
@@ -56,6 +57,16 @@ local SPRINT_VFX_NAMES = { "SprintVFX" }
 
 local SLIDE_VFX_DOWN_OFFSET = 2
 local SLIDE_VFX_NAMES = { "SlideVfx" }
+
+-- One picked at random per parry, not all three combined (unlike Block's BlockPT1+BlockPT2
+-- layers) — variety across repeated parries rather than a denser combined burst every time.
+local PARRY_VFX_NAMES = { "Parry", "Parry1", "Parry2" }
+
+-- Studs above HRP a Critical's "Perilous" telegraph sits — roughly head height on a standard R6 rig.
+local CRITICAL_TELEGRAPH_HEIGHT_OFFSET = Vector3.new(0, 1, 0)
+-- Studs below HRP a Critical's "CriticalStep" foot-puff sits — roughly ground level on a
+-- standard R6 rig.
+local CRITICAL_STEP_FOOT_OFFSET = Vector3.new(0, -3, 0)
 
 -- States the FSM can pass through mid-sprint that should NOT cut the trail.
 local SPRINT_VFX_CONTINUATION_STATES = {
@@ -159,86 +170,173 @@ local function playLimbTrail(vfxName: string, character: Instance, duration: num
 	end
 end
 
-local function spawnClashSparks(vfxNames, parent: Instance, sourceFolder: Instance?)
-	sourceFolder = sourceFolder or CombatVFXFolder
-	for _, vfxName in ipairs(vfxNames) do
-		local vfxPrefab = sourceFolder:FindFirstChild(vfxName)
-		if vfxPrefab then
-			local vfxClone = vfxPrefab:Clone()
-			vfxClone.Parent = parent
+-- Ground dust kicked up under the character on a (grounded) Dash, tinted toward whatever surface
+-- it's welded over. Ported from a reference implementation supplied for this feature — weld
+-- offset/rotation, timings, and the default/lerp color logic are kept close to the original numbers
+-- since the DashPart asset itself was authored against them.
+local DASH_DUST_DEFAULT_COLOR = Color3.fromRGB(204, 204, 204)
+local DASH_DUST_WELD_CFRAME = CFrame.new(0, -2.2, 0) * CFrame.Angles(-math.pi / 2, 0, 0)
+local DASH_DUST_GROUND_CHECK_DISTANCE = 5
+local DASH_DUST_EMIT_DURATION = 0.24
+local DASH_DUST_CLEANUP_TIME = 5
 
-			for _, emitter in ipairs(vfxClone:GetDescendants()) do
-				if emitter:IsA("ParticleEmitter") then
-					emitter:Emit(emitter:GetAttribute("EmitCount") or 15)
-				end
-			end
-		else
-			warn("Missing " .. vfxName .. " in " .. sourceFolder:GetFullName())
-		end
-	end
-end
-
-local AFTERIMAGE_FADE_TIME = 0.5
-local AFTERIMAGE_TRANSPARENCY_BUMP = 0.35 -- added on top of each part's own existing transparency
-
--- Dodge afterimage: a frozen, non-interactive snapshot of sourceCharacter's current pose, dropped at
--- snapshotCFrame (the spot they were actually standing in when the i-frame dodge happened — see
--- HitRegistrationService), then faded out and destroyed. Cloning preserves whatever pose/appearance
--- the source rig had at clone time; PivotTo just moves that pose to the right place without altering it.
-local function spawnAfterimage(sourceCharacter: Model?, snapshotCFrame: CFrame?)
-	if not sourceCharacter or not snapshotCFrame then return end
-
-	local clone = sourceCharacter:Clone()
-
-	for _, descendant in ipairs(clone:GetDescendants()) do
-		if descendant:IsA("Script") or descendant:IsA("LocalScript") then
-			descendant:Destroy()
-		elseif descendant:IsA("BasePart") then
-			descendant.Anchored = true
-			descendant.CanCollide = false
-			descendant.CanQuery = false
-			descendant.CanTouch = false
-			descendant.Massless = true
-		end
-	end
-
-	local humanoid = clone:FindFirstChildOfClass("Humanoid")
-	if humanoid then
-		humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
-		humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
-		humanoid.NameDisplayDistance = 0
-	end
-
-	clone:PivotTo(snapshotCFrame)
-	clone.Parent = workspace
-
-	local fadeInfo = TweenInfo.new(AFTERIMAGE_FADE_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-	for _, descendant in ipairs(clone:GetDescendants()) do
-		if descendant:IsA("BasePart") then
-			descendant.Transparency = math.clamp(descendant.Transparency + AFTERIMAGE_TRANSPARENCY_BUMP, 0, 1)
-			TweenService:Create(descendant, fadeInfo, { Transparency = 1 }):Play()
-		elseif descendant:IsA("Decal") or descendant:IsA("Texture") then
-			TweenService:Create(descendant, fadeInfo, { Transparency = 1 }):Play()
-		end
-	end
-
-	Debris:AddItem(clone, AFTERIMAGE_FADE_TIME + 0.1)
-end
-
--- Reacts to server-broadcast combat clashes. A missing/unrecognized weaponName falls back to silence (VFX still plays).
-local function onCombatVisual(effectType: string, position: Vector3?, weaponName: string?, attackKindName: string?, dodgeCharacter: Model?, dodgeCFrame: CFrame?)
-	local weaponData = weaponName and WeaponRegistry[weaponName]
-	local categorySFX = weaponData and WeaponCategorySFX[weaponData.Category]
-
-	if effectType == "Dodge" then
-		spawnAfterimage(dodgeCharacter, dodgeCFrame)
+local function spawnDashDust(character: Instance, hrp: BasePart)
+	local dustTemplate = MovementVFXFolder:FindFirstChild("DashPart")
+	if not dustTemplate then
+		warn("Missing DashPart in ReplicatedStorage.Assets.VFX.Movement")
 		return
 	end
 
+	-- Tint toward the ground it's dashing over, same as the reference: Terrain uses its material
+	-- color (skipped for Water — the default grey reads better than a lerp-toward-water-blue would),
+	-- a real part uses its own Color. No hit (e.g. dashing off a ledge) just keeps the default.
+	local dustColor = DASH_DUST_DEFAULT_COLOR
+	local rayParams = RaycastParams.new()
+	rayParams.FilterType = Enum.RaycastFilterType.Exclude
+	rayParams.FilterDescendantsInstances = { character }
+
+	local rayOrigin = hrp.Position
+	local rayDirection = Vector3.new(0, -DASH_DUST_GROUND_CHECK_DISTANCE, 0)
+	local rayResult = workspace:Raycast(rayOrigin, rayDirection, rayParams)
+	if rayResult then
+		if rayResult.Instance:IsA("Terrain") then
+			if rayResult.Material ~= Enum.Material.Water then
+				local ok, terrainColor = pcall(function()
+					return workspace.Terrain:GetMaterialColor(rayResult.Material)
+				end)
+				if ok then
+					dustColor = dustColor:Lerp(terrainColor, 0.5)
+				end
+			end
+		else
+			dustColor = dustColor:Lerp(rayResult.Instance.Color, 0.5)
+		end
+	end
+
+	local dustPart = dustTemplate:Clone()
+	dustPart.Anchored = false
+	dustPart.CanCollide = false
+	dustPart.Massless = true
+
+	for _, descendant in ipairs(dustPart:GetDescendants()) do
+		if descendant:IsA("ParticleEmitter") then
+			descendant.Color = ColorSequence.new(dustColor)
+		end
+	end
+
+	local weld = Instance.new("Weld")
+	weld.Part0 = hrp
+	weld.Part1 = dustPart
+	weld.C0 = DASH_DUST_WELD_CFRAME
+	weld.Parent = dustPart
+	dustPart.Parent = workspace
+
+	-- Welded (and emitting) for only the first beat of the dash so the puff trails behind as the
+	-- character pulls away, instead of following the whole way — already-emitted particles keep
+	-- fading on their own after this; only new emission stops.
+	task.delay(DASH_DUST_EMIT_DURATION, function()
+		if not dustPart:IsDescendantOf(workspace) then return end
+		for _, descendant in ipairs(dustPart:GetDescendants()) do
+			if descendant:IsA("ParticleEmitter") or descendant:IsA("Trail") then
+				descendant.Enabled = false
+			end
+		end
+	end)
+
+	Debris:AddItem(dustPart, DASH_DUST_CLEANUP_TIME)
+end
+
+-- A small invisible anchored Part, not a bare Attachment parented to Terrain — Attachments only
+-- resolve WorldPosition/WorldCFrame correctly when parented directly to a real BasePart. Terrain
+-- isn't one (nor is another Attachment), so anything cloned under a Terrain- or
+-- Attachment-parented Attachment silently renders at the wrong spot instead of erroring — this
+-- sidesteps that for every clash VFX/SFX spawned below.
+local function createClashAnchor(position: Vector3): BasePart
+	local anchor = Instance.new("Part")
+	anchor.Name = "ClashAnchor"
+	anchor.Anchored = true
+	anchor.CanCollide = false
+	anchor.CanQuery = false
+	anchor.CanTouch = false
+	anchor.Transparency = 1
+	anchor.Size = Vector3.new(0.1, 0.1, 0.1)
+	anchor.CFrame = CFrame.new(position)
+	anchor.Parent = workspace
+	return anchor
+end
+
+local CLASH_SPARK_LIGHT_FADE_TIME = 0.5
+
+-- Clones every Attachment inside a template and reparents each directly onto anchorPart. The
+-- template itself may BE an Attachment (most are), or a Model/Folder bundling several (e.g. the
+-- Parry/Parry1/Parry2 assets, each holding two) — either way, only the Attachments themselves
+-- get parented onto anchorPart; any Model/Folder wrapper is discarded once emptied.
+local function spawnClashSparks(vfxNames, anchorPart: BasePart, sourceFolder: Instance?)
+	sourceFolder = sourceFolder or CombatVFXFolder
+	for _, vfxName in ipairs(vfxNames) do
+		local vfxPrefab = sourceFolder:FindFirstChild(vfxName)
+		if not vfxPrefab then
+			warn("Missing " .. vfxName .. " in " .. sourceFolder:GetFullName())
+			continue
+		end
+
+		local vfxClone = vfxPrefab:Clone()
+		local isBareAttachment = vfxClone:IsA("Attachment")
+
+		local attachments = {}
+		if isBareAttachment then
+			table.insert(attachments, vfxClone)
+		else
+			for _, descendant in ipairs(vfxClone:GetDescendants()) do
+				if descendant:IsA("Attachment") then
+					table.insert(attachments, descendant)
+				end
+			end
+		end
+
+		for _, attachment in ipairs(attachments) do
+			attachment.Parent = anchorPart
+			for _, descendant in ipairs(attachment:GetDescendants()) do
+				if descendant:IsA("ParticleEmitter") then
+					descendant:Emit(descendant:GetAttribute("EmitCount") or 15)
+				elseif descendant:IsA("PointLight") or descendant:IsA("SpotLight") then
+					-- Fades instead of just popping off the instant Debris destroys the clone.
+					local fadeInfo = TweenInfo.new(
+						CLASH_SPARK_LIGHT_FADE_TIME,
+						Enum.EasingStyle.Quad,
+						Enum.EasingDirection.Out
+					)
+					TweenService:Create(descendant, fadeInfo, { Brightness = 0 }):Play()
+				end
+			end
+		end
+
+		if not isBareAttachment then
+			vfxClone:Destroy()
+		end
+	end
+end
+
+-- Reacts to server-broadcast combat clashes. A missing/unrecognized weaponName falls back to silence (VFX still plays).
+-- _dodgeCharacter/_dodgeCFrame ride along on the "Dodge" broadcast (see HitRegistrationService)
+-- for whatever visual a dodge/i-frame gets — no handler here currently; a prior afterimage
+-- attempt was pulled pending a different implementation. _parriedAttackerCharacter similarly
+-- rides along on "Parry" (the person whose swing just got parried) — a GotParried wind-effect
+-- attempt on them was also pulled pending a different implementation; the server still sends it.
+local function onCombatVisual(
+	effectType: string,
+	position: Vector3?,
+	weaponName: string?,
+	attackKindName: string?,
+	_dodgeCharacter: Model?,
+	_dodgeCFrame: CFrame?,
+	_parriedAttackerCharacter: Model?
+)
+	local weaponData = weaponName and WeaponRegistry[weaponName]
+	local categorySFX = weaponData and WeaponCategorySFX[weaponData.Category]
+
 	if effectType == "Parry" then
-		local clashAnchor = Instance.new("Attachment")
-		clashAnchor.Position = position
-		clashAnchor.Parent = workspace.Terrain
+		local clashAnchor = createClashAnchor(position)
 
 		-- Weapon-agnostic: whoever's parrying, it's the same sound (see CombatConstants.SFX.Parry).
 		local generalSFXFolder = getGeneralSFXFolder()
@@ -246,13 +344,12 @@ local function onCombatVisual(effectType: string, position: Vector3?, weaponName
 			playRandomNamedSound(generalSFXFolder, CombatConstants.SFX.Parry, clashAnchor)
 		end
 
-		spawnClashSparks({ "ParryVFX" }, clashAnchor)
+		local parryVFXName = PARRY_VFX_NAMES[math.random(1, #PARRY_VFX_NAMES)]
+		spawnClashSparks({ parryVFXName }, clashAnchor, GeneralCombatVFXFolder)
 		Debris:AddItem(clashAnchor, 2)
 
 	elseif effectType == "Block" then
-		local clashAnchor = Instance.new("Attachment")
-		clashAnchor.Position = position
-		clashAnchor.Parent = workspace.Terrain
+		local clashAnchor = createClashAnchor(position)
 
 		if categorySFX then
 			local blockedHitFolder = getCategoryHitSFXFolder(weaponData.Category, "BlockedHit")
@@ -261,13 +358,11 @@ local function onCombatVisual(effectType: string, position: Vector3?, weaponName
 			end
 		end
 
-		spawnClashSparks({ "BlockPT1", "BlockPT2" }, clashAnchor)
+		spawnClashSparks({ "BlockPT1", "BlockPT2" }, clashAnchor, GeneralCombatVFXFolder)
 		Debris:AddItem(clashAnchor, 2)
 
 	elseif effectType == "GuardBreak" then
-		local clashAnchor = Instance.new("Attachment")
-		clashAnchor.Position = position
-		clashAnchor.Parent = workspace.Terrain
+		local clashAnchor = createClashAnchor(position)
 
 		-- Weapon-agnostic, same as Parry/Feint/Critical (see CombatConstants.SFX.GuardBreak).
 		local generalSFXFolder = getGeneralSFXFolder()
@@ -275,20 +370,20 @@ local function onCombatVisual(effectType: string, position: Vector3?, weaponName
 			playRandomNamedSound(generalSFXFolder, CombatConstants.SFX.GuardBreak, clashAnchor)
 		end
 
+		spawnClashSparks({ "GuardBreak" }, clashAnchor, GeneralCombatVFXFolder)
+
 		Debris:AddItem(clashAnchor, 2)
 
 	elseif effectType == "Hit" then
-		local clashAnchor = Instance.new("Attachment")
-		clashAnchor.Position = position
-		clashAnchor.Parent = workspace.Terrain
+		local clashAnchor = createClashAnchor(position)
 
-		-- Critical's own SFX (CombatConstants.SFX.Critical) plays on windup instead (see the "Swing"
-		-- branch below) — its actual impact just uses the category's landed-hit pool like any other hit.
 		if categorySFX then
 			local landedHitFolder = getCategoryHitSFXFolder(weaponData.Category, "LandedHit")
 			if landedHitFolder then
 				if attackKindName == "AerialAttack" and categorySFX.AerialLandedHit then
 					playRandomNamedSound(landedHitFolder, { categorySFX.AerialLandedHit }, clashAnchor)
+				elseif attackKindName == "Critical" and categorySFX.CritLandedHit then
+					playRandomNamedSound(landedHitFolder, { categorySFX.CritLandedHit }, clashAnchor)
 				else
 					playRandomNamedSound(landedHitFolder, categorySFX.LandedHit, clashAnchor)
 				end
@@ -297,33 +392,47 @@ local function onCombatVisual(effectType: string, position: Vector3?, weaponName
 
 		local impactVFXName = weaponData and attackKindName and weaponData.ImpactVFX[attackKindName]
 		if impactVFXName then
-			spawnClashSparks({ impactVFXName }, clashAnchor, GeneralCombatVFXFolder)
+			local impactVFXNames = { impactVFXName }
+			-- Blood spatter layered on top of any Blunt-category impact — bruising/splatter reads
+			-- differently for a bladed hit, so this stays gated to the category it's named for
+			-- rather than playing on every weapon's impact.
+			if weaponData.Category == WeaponCategoryDefs.Blunt then
+				table.insert(impactVFXNames, "BluntHitBlood")
+			end
+			spawnClashSparks(impactVFXNames, clashAnchor, GeneralCombatVFXFolder)
 		end
 
 		Debris:AddItem(clashAnchor, 2)
 
 	elseif effectType == "Swing" then
-		if attackKindName == "Critical" then
-			-- Weapon-agnostic, unlike Swing/AerialSwing/Flourish below — same clip regardless of what's
-			-- equipped (see CombatConstants.SFX.Critical). This is the windup "charging up" cue; the
-			-- actual impact just uses the category's landed-hit pool (see the "Hit" branch above).
-			local clashAnchor = Instance.new("Attachment")
-			clashAnchor.Position = position
-			clashAnchor.Parent = workspace.Terrain
-
+		if attackKindName == "Critical" and position then
+			-- Weapon-agnostic layer every Critical gets regardless of what's equipped — on top of
+			-- (not instead of) the per-weapon whoosh below. Own anchor since Perilous/CriticalStep
+			-- each need a different height (above the head / at the feet) than this general one.
+			local generalAnchor = createClashAnchor(position)
 			local generalSFXFolder = getGeneralSFXFolder()
 			if generalSFXFolder then
-				playRandomNamedSound(generalSFXFolder, CombatConstants.SFX.Critical, clashAnchor)
+				playRandomNamedSound(generalSFXFolder, CombatConstants.SFX.Critical, generalAnchor)
 			end
+			Debris:AddItem(generalAnchor, 2)
 
-			Debris:AddItem(clashAnchor, 2)
+			local telegraphAnchor = createClashAnchor(position + CRITICAL_TELEGRAPH_HEIGHT_OFFSET)
+			spawnClashSparks({ "Perilous" }, telegraphAnchor, GeneralCombatVFXFolder)
+			Debris:AddItem(telegraphAnchor, 2)
 
-		-- Swing/AerialSwing/Flourish are all optional (see WeaponTypes.WeaponSFX) — whichever one
-		-- this attackKindName maps to just silently does nothing if the weapon hasn't defined it.
-		elseif weaponData and (weaponData.SFX.Swing or weaponData.SFX.AerialSwing or weaponData.SFX.Flourish) then
-			local clashAnchor = Instance.new("Attachment")
-			clashAnchor.Position = position
-			clashAnchor.Parent = workspace.Terrain
+			local footAnchor = createClashAnchor(position + CRITICAL_STEP_FOOT_OFFSET)
+			spawnClashSparks({ "CriticalStep" }, footAnchor, GeneralCombatVFXFolder)
+			Debris:AddItem(footAnchor, 2)
+		end
+
+		-- Swing/AerialSwing/Flourish/Critical are all optional per-weapon (see WeaponTypes.WeaponSFX)
+		-- — whichever one this attackKindName maps to just silently does nothing if the weapon
+		-- hasn't defined it.
+		local weaponSFX = weaponData and weaponData.SFX
+		local weaponSwingSFX = weaponSFX
+			and (weaponSFX.Swing or weaponSFX.AerialSwing or weaponSFX.Flourish or weaponSFX.Critical)
+		if weaponSwingSFX then
+			local clashAnchor = createClashAnchor(position)
 
 			local swingsFolderName = weaponData.SFX.SwingsFolderName or weaponName
 			local weaponSFXFolder = CombatSwingsSFXFolder:FindFirstChild(swingsFolderName)
@@ -332,7 +441,13 @@ local function onCombatVisual(effectType: string, position: Vector3?, weaponName
 					playRandomNamedSound(weaponSFXFolder, { weaponData.SFX.Flourish }, clashAnchor)
 				elseif attackKindName == "AerialAttack" and weaponData.SFX.AerialSwing then
 					playRandomNamedSound(weaponSFXFolder, { weaponData.SFX.AerialSwing }, clashAnchor)
-				elseif attackKindName ~= "Flourish" and attackKindName ~= "AerialAttack" and weaponData.SFX.Swing then
+				elseif attackKindName == "Critical" and weaponData.SFX.Critical then
+					playRandomNamedSound(weaponSFXFolder, { weaponData.SFX.Critical }, clashAnchor)
+				elseif attackKindName ~= "Flourish"
+					and attackKindName ~= "AerialAttack"
+					and attackKindName ~= "Critical"
+					and weaponData.SFX.Swing
+				then
 					playRandomNamedSound(weaponSFXFolder, weaponData.SFX.Swing, clashAnchor)
 				end
 			end
@@ -341,9 +456,7 @@ local function onCombatVisual(effectType: string, position: Vector3?, weaponName
 		end
 
 	elseif effectType == "Feint" then
-		local clashAnchor = Instance.new("Attachment")
-		clashAnchor.Position = position
-		clashAnchor.Parent = workspace.Terrain
+		local clashAnchor = createClashAnchor(position)
 
 		local generalSFXFolder = getGeneralSFXFolder()
 		if generalSFXFolder then
@@ -432,6 +545,7 @@ local function setupCharacterVFX(fsm, character)
 			playBurstVFX("HardLandVfx", getGroundCFrame(hrp, character))
 		elseif newState == MovementStateDefs.Dashing then
 			playLimbTrail("DashTrailVfx", character, MovementConstants.DashDuration)
+			spawnDashDust(character, hrp)
 		elseif newState == MovementStateDefs.AirDashing then
 			playBurstVFX("AirDashVfx", hrp.CFrame)
 			playLimbTrail("DashTrailVfx", character, MovementConstants.AirDashDuration)

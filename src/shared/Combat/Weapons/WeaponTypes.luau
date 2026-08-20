@@ -58,7 +58,8 @@ export type WeaponBlockStats = {
 export type WeaponParryStats = {
 	WindowTime: number, -- how long the parry timing window stays open
 	RecoveryTime: number, -- locked in ParryRecovery after a successful parry (can still move)
-	WhiffCooldown: number, -- lockout on a fresh Parrying window after one whiffs
+	WhiffCooldown: number, -- lockout on a fresh Parrying attempt, from the press (see startParrying)
+	AutoParryDuration: number, -- grace after a successful parry where further hits auto-parry too
 	PostureRelief: number, -- posture healed off your own bar the instant a parry lands
 	KnockbackForce: number, -- studs/sec pushed along the parrier's LookVector, applied to the ATTACKER
 	KnockbackDuration: number, -- seconds the push velocity is sustained
@@ -82,7 +83,7 @@ export type WeaponAnimations = {
 }
 
 -- Named Sound instances under ReplicatedStorage.Assets.SFX.Combat.Swings.<SwingsFolderName>.
--- Per-weapon (unlike Hit/Block, see WeaponCategorySFX, and Parry/Feint/Critical, see
+-- Per-weapon (unlike Hit/Block, see WeaponCategorySFX, and Parry/Feint/GuardBreak, see
 -- CombatConstants.SFX) since a swing whoosh is tied to this specific weapon's own animation, not its
 -- damage-type category. All optional: a weapon with no swing SFX (yet, or ever) just plays silently.
 export type WeaponSFX = {
@@ -93,6 +94,7 @@ export type WeaponSFX = {
 	Swing: { string }?, -- whoosh on a grounded M1 windup start; one random clip per swing
 	AerialSwing: string?, -- whoosh on an AerialAttack windup start; always this one clip
 	Flourish: string?, -- whoosh on a Flourish windup start; always this one clip
+	Critical: string?, -- whoosh on a Critical windup start; always this one clip
 }
 
 -- Named VFX instances under ReplicatedStorage.Assets.VFX.Combat.General, keyed by attack kind
@@ -102,6 +104,7 @@ export type WeaponSFX = {
 export type WeaponImpactVFX = {
 	M1: string?,
 	AerialAttack: string?,
+	Flourish: string?,
 }
 
 -- Committed forward LinearVelocity for the whole RunningAttack swing, re-read every frame so you

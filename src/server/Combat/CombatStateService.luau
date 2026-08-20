@@ -94,12 +94,34 @@ function CombatStateService.forceState(player: Player, state: string, durationOv
 	end
 end
 
--- Cosmetic-only — the defender's FSM already goes back to Idle via a separate forceState call
--- (see HitRegistrationService's parry branch). AnimationController plays the ParrySuccess one-shot off this.
+-- Cosmetic-only ping — AnimationController/CameraController play their one-shots off this, and
+-- ClientCombatState's own listener uses it to extend its local Parrying window (see
+-- extendParryGrace below for the server-authoritative half of that).
 function CombatStateService.notifyParrySuccess(player: Player)
 	if combatIntentEvent then
 		combatIntentEvent:FireClient(player, "ParrySuccess")
 	end
+end
+
+-- Called instead of forceState(player, ParryRecovery) the instant a parry lands — keeps the
+-- defender server-side in Parrying (so a follow-up hit within `duration` is validated as another
+-- real parry, not a normal hit) and only actually forces ParryRecovery once `duration` elapses with
+-- nothing further landing. A second parry within the window re-calls this, cancelling and
+-- restarting the timer — chained parries keep extending, never stacking multiple pending timers.
+-- The `playerProfiles[player] == profile` check guards against a stale timer outliving a
+-- death/respawn (CharacterAdded replaces the whole profile table; the orphaned old one should
+-- never force anything).
+function CombatStateService.extendParryGrace(player: Player, duration: number)
+	local profile = getProfile(player)
+	if profile.parryGraceTask then
+		task.cancel(profile.parryGraceTask)
+	end
+	profile.parryGraceTask = task.delay(duration, function()
+		profile.parryGraceTask = nil
+		if playerProfiles[player] == profile and profile.state == CombatStateDefs.Parrying then
+			CombatStateService.forceState(player, CombatStateDefs.ParryRecovery)
+		end
+	end)
 end
 
 -- Cosmetic-only, fired alongside every forceState(player, Stunned, ...) call including refreshes
