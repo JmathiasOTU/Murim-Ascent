@@ -111,6 +111,14 @@ function CombatStateService.notifyHitReaction(player: Player, hasKnockback: bool
 	end
 end
 
+-- Cosmetic-only — fired to the ATTACKER (not the target) the instant their own Hit registers, so
+-- CameraController can punch the camera on landing an M1 the same way ParrySuccess does.
+function CombatStateService.notifyHitLanded(player: Player)
+	if combatIntentEvent then
+		combatIntentEvent:FireClient(player, "HitLanded")
+	end
+end
+
 -- Cosmetic-only — a successful block never changes FSM state, so there's no StateChanged to hang
 -- a reaction animation off. Not fired on a guard-break (BlockBreak's own animation would stomp it).
 function CombatStateService.notifyBlockSuccess(player: Player)

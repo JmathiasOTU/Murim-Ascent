@@ -91,6 +91,11 @@ local Fists: WeaponTypes.WeaponData = {
 		WhiffCooldown = 1,
 
 		PostureRelief = 15, -- posture healed off your own bar the instant a parry lands
+
+		-- Slight punish shove on the ATTACKER, pushed along the parrier's facing (they whiffed
+		-- into you). Much lighter than Flourish's 40/0.4 — this should read as a stagger, not a launch.
+		KnockbackForce = 12,
+		KnockbackDuration = 0.2,
 	},
 	Animations = {
 		M1 = {

@@ -3,7 +3,6 @@ local Players = game:GetService("Players")
 local ContextActionService = game:GetService("ContextActionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
-local TweenService = game:GetService("TweenService")
 
 local LemonSignal = require(ReplicatedStorage.Shared.StateMachine.LemonSignal)
 local FSM = require(ReplicatedStorage.Shared.StateMachine.FSM)
@@ -16,6 +15,7 @@ local MovementConstants = require(ReplicatedStorage.Shared.Movement.MovementCons
 local CombatConstants = require(ReplicatedStorage.Shared.Combat.CombatConstants)
 local ClientMovementState = require(script.Parent.Parent.Movement.ClientMovementState)
 local VelocityConstraintUtils = require(script.Parent.Parent.Movement.VelocityConstraintUtils)
+local CombatMoveUtils = require(script.Parent.CombatMoveUtils)
 
 local ClientCombatState = {}
 ClientCombatState.FSMReady = LemonSignal.new() -- fires (fsm, character), same contract as ClientMovementState
@@ -165,23 +165,6 @@ function ClientCombatState.isEngaged(): boolean
 	return ClientCombatState.CurrentFSM ~= nil and ClientCombatState.CurrentFSM.CurrentState ~= CombatStateDefs.Idle
 end
 
--- TEMP debug: traces the swept hitbox in real time to resync against animations. Client-only, never replicated.
-local SHOW_HITBOX_DEBUG = true
-
-local function createDebugHitbox(): BasePart
-	local box = Instance.new("Part")
-	box.Name = "HitboxDebug"
-	box.Anchored = true
-	box.CanCollide = false
-	box.CanQuery = false
-	box.CanTouch = false
-	box.Material = Enum.Material.ForceField
-	box.Color = Color3.new(1, 0, 0)
-	box.Transparency = 0.5
-	box.Parent = workspace
-	return box
-end
-
 function ClientCombatState.start()
 	local player = Players.LocalPlayer
 	local CombatIntent = RemoteRegistry.getEvent("CombatIntent")
@@ -203,6 +186,9 @@ function ClientCombatState.start()
 
 		-- Own pool, separate from Movement's Qinggong ones.
 		local dashVelocityPool = VelocityConstraintUtils.new(hrp, 0, "CombatDash")
+		local combatMoveUtils = CombatMoveUtils.new(character, hrp, dashVelocityPool, function(locked: boolean)
+			ClientCombatState.MovementLocked = locked
+		end)
 
 		local activeTasks = {}
 		-- BlockBreak/Parried/Stunned/guard WalkSpeed+JumpPower watcher connections (see lockMovementForStun).
@@ -351,195 +337,6 @@ function ClientCombatState.start()
 			end
 		end)
 
-		-- Sweeps every Heartbeat for the active window so a fast camera turn mid-swing still lands.
-		-- Shared by M1 and Critical.
-		local function performHitboxSweep(activeStats, activeState, attackKind)
-			local overlapParams = OverlapParams.new()
-			overlapParams.FilterType = Enum.RaycastFilterType.Exclude
-			overlapParams.FilterDescendantsInstances = { character }
-
-			local debugBox = SHOW_HITBOX_DEBUG and createDebugHitbox()
-			if debugBox then
-				debugBox.Size = activeStats.HitboxSize
-			end
-
-			local alreadyHit = {}
-			local elapsed = 0
-			local sweepConnection: RBXScriptConnection
-			sweepConnection = RunService.Heartbeat:Connect(function(dt)
-				elapsed += dt
-				if elapsed >= activeStats.ActiveTime or fsm.CurrentState ~= activeState then
-					sweepConnection:Disconnect()
-					if debugBox then
-						debugBox:Destroy()
-					end
-					return
-				end
-
-				local hitboxCFrame = hrp.CFrame * activeStats.HitboxOffset
-				if debugBox then
-					debugBox.CFrame = hitboxCFrame
-				end
-				local parts = workspace:GetPartBoundsInBox(hitboxCFrame, activeStats.HitboxSize, overlapParams)
-
-				for _, part in ipairs(parts) do
-					local targetCharacter = part.Parent
-					local targetHumanoid = targetCharacter and targetCharacter:FindFirstChild("Humanoid")
-					if targetHumanoid and targetHumanoid.Health > 0 and not alreadyHit[targetCharacter] then
-						alreadyHit[targetCharacter] = true
-						CombatIntent:FireServer("Hit", { target = targetCharacter, attackKind = attackKind })
-					end
-				end
-			end)
-		end
-
-		-- Committed forward dash for RunningAttack's entire Windup-Active-Endlag span, decaying to a
-		-- stop by Endlag — the constraint dominates WASD for as long as it's enabled, same as
-		-- Dashing/Sliding. Re-reads facing every Heartbeat so the player can still steer. Returns
-		-- release() so Feint can cut it short.
-		local function performRunningAttackDash(totalDuration: number)
-			local massForce = hrp.AssemblyMass * CombatConstants.VelocityConstraintForceMultiplier
-			local generation = VelocityConstraintUtils.activate(dashVelocityPool, Vector3.new(massForce, 0, massForce))
-			ClientCombatState.MovementLocked = true
-
-			local speedValue = Instance.new("NumberValue")
-			speedValue.Value = RunningAttackDash.Speed
-
-			local steerConnection: RBXScriptConnection
-			steerConnection = RunService.Heartbeat:Connect(function()
-				if dashVelocityPool.generation ~= generation then
-					steerConnection:Disconnect()
-					return
-				end
-				dashVelocityPool.velocity.VectorVelocity = hrp.CFrame.LookVector * speedValue.Value
-			end)
-
-			local decayTween = TweenService:Create(
-				speedValue,
-				TweenInfo.new(totalDuration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-				{ Value = 0 }
-			)
-			decayTween:Play()
-
-			local released = false
-			local function release()
-				if released then return end
-				released = true
-
-				decayTween:Cancel()
-				speedValue:Destroy()
-				steerConnection:Disconnect()
-				VelocityConstraintUtils.deactivateIfCurrent(dashVelocityPool, generation)
-				-- Only clear if a newer RunningAttack hasn't already re-locked movement.
-				if dashVelocityPool.generation == generation then
-					ClientCombatState.MovementLocked = false
-				end
-			end
-
-			task.delay(totalDuration, release)
-			return release
-		end
-
-		-- Momentum-preserving plunge for the whole AerialAttack swing: a brief suspended hang, then
-		-- an accelerating forward+down dive blended with pre-attack momentum, held at peak speed
-		-- until landing or the swing ends. Collision is briefly ghosted so a low-angle plunge can't
-		-- snag a ledge. Returns release() so Feint/landing can cut it short.
-		local function performAerialAttackDive(totalDuration: number)
-			local preAttackMomentum = Vector3.new(hrp.AssemblyLinearVelocity.X, 0, hrp.AssemblyLinearVelocity.Z)
-				* AerialAttackDive.MomentumRetention
-
-			local characterParts = {}
-			for _, descendant in ipairs(character:GetDescendants()) do
-				if descendant:IsA("BasePart") then
-					table.insert(characterParts, descendant)
-				end
-			end
-
-			local originalCanCollide = {}
-			for _, part in ipairs(characterParts) do
-				originalCanCollide[part] = part.CanCollide
-				part.CanCollide = false
-			end
-
-			local function restoreCollision()
-				for part, wasCollidable in pairs(originalCanCollide) do
-					if part and part.Parent then
-						part.CanCollide = wasCollidable
-					end
-				end
-			end
-
-			local massForce = hrp.AssemblyMass * CombatConstants.VelocityConstraintForceMultiplier
-			local generation = VelocityConstraintUtils.activate(dashVelocityPool, Vector3.new(massForce, massForce, massForce))
-			ClientCombatState.MovementLocked = true
-
-			-- Hang: near-zero vertical motion (plus carried momentum) instead of free-falling through the anticipation beat.
-			dashVelocityPool.velocity.VectorVelocity = Vector3.new(0, AerialAttackDive.HangLift, 0) + preAttackMomentum
-
-			local diveStartTime = os.clock() + AerialAttackDive.HangDuration
-			local speedValue = Instance.new("NumberValue")
-			speedValue.Value = AerialAttackDive.DiveMinSpeed
-
-			local steerConnection: RBXScriptConnection
-			steerConnection = RunService.Heartbeat:Connect(function()
-				if dashVelocityPool.generation ~= generation then
-					steerConnection:Disconnect()
-					return
-				end
-				if os.clock() < diveStartTime then return end
-
-				local diveDirection = (hrp.CFrame.LookVector + Vector3.new(0, -AerialAttackDive.DownwardPitch, 0)).Unit
-				dashVelocityPool.velocity.VectorVelocity = diveDirection * speedValue.Value + preAttackMomentum
-			end)
-
-			-- Ramp to peak speed as the hang ends, then hold — release() below cuts it the instant
-			-- landing actually happens, so there's no need to taper back down on a fixed timer.
-			task.delay(AerialAttackDive.HangDuration, function()
-				if dashVelocityPool.generation ~= generation then return end
-
-				local remainingDuration = math.max(totalDuration - AerialAttackDive.HangDuration, 0)
-				local rampDuration = math.min(AerialAttackDive.DiveRampDuration, remainingDuration)
-
-				TweenService:Create(
-					speedValue,
-					TweenInfo.new(rampDuration, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
-					{ Value = AerialAttackDive.DiveMaxSpeed }
-				):Play()
-			end)
-
-			local releaseConnection: RBXScriptConnection
-			local released = false
-			local function release()
-				if released then return end
-				released = true
-
-				if releaseConnection then
-					releaseConnection:Disconnect()
-				end
-				steerConnection:Disconnect()
-				speedValue:Destroy()
-				VelocityConstraintUtils.deactivateIfCurrent(dashVelocityPool, generation)
-				restoreCollision()
-				if dashVelocityPool.generation == generation then
-					ClientCombatState.MovementLocked = false
-				end
-			end
-
-			-- End the plunge the moment a real landing takes over, instead of fighting it for
-			-- control of the HRP's velocity.
-			local movementFSM = ClientMovementState.CurrentFSM
-			if movementFSM then
-				releaseConnection = movementFSM.StateChanged:Connect(function(_oldState, newState)
-					if newState ~= MovementStateDefs.Falling then
-						release()
-					end
-				end)
-			end
-
-			task.delay(totalDuration, release)
-			return release
-		end
-
 		-- Only legal from Idle, mirrored server-side — can't swap weapons mid-swing/block/stun.
 		-- Echoed to the server (same shape as the FSM's own UpdateState echo) so HitRegistrationService
 		-- and CombatStateService's own gate agree on whether this player can currently attack.
@@ -618,17 +415,27 @@ function ClientCombatState.start()
 			windupStartTime = lastSwingTime
 			currentWindupTime = activeStats.WindupTime
 
+			local totalSwingDuration =
+				activeStats.WindupTime + activeStats.ActiveTime + activeStats.EndlagTime
 			if attackType == "RunningAttack" then
 				lastRunningAttackTime = now
-				activeMovementLockRelease = performRunningAttackDash(activeStats.WindupTime + activeStats.ActiveTime + activeStats.EndlagTime)
+				activeMovementLockRelease =
+					combatMoveUtils.performRunningAttackDash(totalSwingDuration, RunningAttackDash.Speed)
 			elseif attackType == "AerialAttack" then
 				lastAerialAttackTime = now
-				activeMovementLockRelease = performAerialAttackDive(activeStats.WindupTime + activeStats.ActiveTime + activeStats.EndlagTime)
+				activeMovementLockRelease =
+					combatMoveUtils.performAerialAttackDive(totalSwingDuration, AerialAttackDive)
 			end
 
 			scheduleTask("CombatFlow", activeStats.WindupTime, function()
 				if not fsm:transition(CombatStateDefs.M1_Active) then return end
-				performHitboxSweep(sweepStats, CombatStateDefs.M1_Active, attackType)
+				combatMoveUtils.performHitboxSweep(
+					fsm,
+					CombatIntent,
+					sweepStats,
+					CombatStateDefs.M1_Active,
+					attackType
+				)
 
 				scheduleTask("CombatFlow", activeStats.ActiveTime, function()
 					if not fsm:transition(CombatStateDefs.M1_Endlag) then return end
@@ -645,42 +452,6 @@ function ClientCombatState.start()
 					end)
 				end)
 			end)
-		end
-
-		-- Nearest valid target roughly in front, within CombatConstants.AerialCritAutoAimRange/Cone —
-		-- feeds the slight windup-only facing nudge in critical() below.
-		local AERIAL_CRIT_AUTOAIM_CONE_DOT = math.cos(math.rad(CombatConstants.AerialCritAutoAimConeDegrees))
-		local function findAerialCritAutoAimTarget(): BasePart?
-			local searchParams = OverlapParams.new()
-			searchParams.FilterType = Enum.RaycastFilterType.Exclude
-			searchParams.FilterDescendantsInstances = { character }
-
-			local parts = workspace:GetPartBoundsInRadius(hrp.Position, CombatConstants.AerialCritAutoAimRange, searchParams)
-
-			local seenCharacters = {}
-			local bestTargetHRP: BasePart? = nil
-			local bestDot = AERIAL_CRIT_AUTOAIM_CONE_DOT
-
-			for _, part in ipairs(parts) do
-				local targetCharacter = part.Parent
-				if targetCharacter and not seenCharacters[targetCharacter] then
-					seenCharacters[targetCharacter] = true
-					local targetHumanoid = targetCharacter:FindFirstChild("Humanoid")
-					local targetHRP = targetCharacter:FindFirstChild("HumanoidRootPart")
-					if targetHumanoid and targetHRP and targetHumanoid.Health > 0 then
-						local toTarget = targetHRP.Position - hrp.Position
-						if toTarget.Magnitude > 0.01 then
-							local dot = hrp.CFrame.LookVector:Dot(toTarget.Unit)
-							if dot > bestDot then
-								bestDot = dot
-								bestTargetHRP = targetHRP
-							end
-						end
-					end
-				end
-			end
-
-			return bestTargetHRP
 		end
 
 		-- Critical: a single heavier hit, only startable from Idle, no combo/buffering. On cooldown it just doesn't fire.
@@ -706,7 +477,7 @@ function ClientCombatState.start()
 			-- ForceState handler above) can still tear it down instead of leaving it spinning forever.
 			local movementFSM = ClientMovementState.CurrentFSM
 			if movementFSM and movementFSM.CurrentState == MovementStateDefs.Falling then
-				local autoAimTargetHRP = findAerialCritAutoAimTarget()
+				local autoAimTargetHRP = combatMoveUtils.findAerialCritAutoAimTarget()
 				if autoAimTargetHRP then
 					local maxCorrection = math.rad(CombatConstants.AerialCritAutoAimMaxCorrectionDegrees)
 					local autoAimConnection: RBXScriptConnection
@@ -737,7 +508,13 @@ function ClientCombatState.start()
 				end
 
 				if not fsm:transition(CombatStateDefs.Critical_Active) then return end
-				performHitboxSweep(CriticalStats, CombatStateDefs.Critical_Active, "Critical")
+				combatMoveUtils.performHitboxSweep(
+				fsm,
+				CombatIntent,
+				CriticalStats,
+				CombatStateDefs.Critical_Active,
+				"Critical"
+			)
 
 				scheduleTask("CombatFlow", CriticalStats.ActiveTime, function()
 					if not fsm:transition(CombatStateDefs.Critical_Endlag) then return end

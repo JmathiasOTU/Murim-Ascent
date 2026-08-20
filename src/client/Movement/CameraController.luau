@@ -68,6 +68,7 @@ function CameraController.start()
 	local currentHeadSway = Vector3.zero
 	local currentParryBlurSize = 0
 	local currentParryShake = 0
+	local currentHitShake = 0
 
 	-- One persistent effect for the whole client session, not per-character.
 	local treeJumpBlur = Instance.new("BlurEffect")
@@ -87,12 +88,21 @@ function CameraController.start()
 		currentParryShake = math.rad(CombatConstants.CameraParryShakeMagnitudeDegrees)
 	end
 
+	-- Landed-M1 impact: same one-shot decaying shake as the parry punch, no blur, at a lesser
+	-- magnitude — fired only to the attacker (see CombatStateService.notifyHitLanded), so it never
+	-- fires on whoever's getting hit.
+	local function triggerHitImpact()
+		currentHitShake = math.rad(CombatConstants.CameraHitShakeMagnitudeDegrees)
+	end
+
 	-- Fires on both the parrier (ParrySuccess cosmetic ping) and whoever's attack just got parried
 	-- (Parried FSM state) — neither is scoped to a specific character, so these are session-level.
 	local CombatIntent = RemoteRegistry.getEvent("CombatIntent")
 	CombatIntent.OnClientEvent:Connect(function(action)
 		if action == "ParrySuccess" then
 			triggerParryImpact()
+		elseif action == "HitLanded" then
+			triggerHitImpact()
 		end
 	end)
 	ClientCombatState.FSMReady:Connect(function(combatFsm, combatCharacter)
@@ -276,6 +286,16 @@ function CameraController.start()
 				local shakeRoll = (math.random() * 2 - 1) * currentParryShake
 				camera.CFrame *= CFrame.Angles(shakePitch, shakeYaw, shakeRoll)
 			end
+
+			-- Landed-M1 impact punch: same one-shot decaying shake, lesser magnitude (see triggerHitImpact above).
+			local hitShakeAlpha = 1 - math.exp(-CombatConstants.CameraHitShakeDecaySpeed * dt)
+			currentHitShake += (0 - currentHitShake) * hitShakeAlpha
+			if currentHitShake > 0.0001 then
+				local shakePitch = (math.random() * 2 - 1) * currentHitShake
+				local shakeYaw = (math.random() * 2 - 1) * currentHitShake
+				local shakeRoll = (math.random() * 2 - 1) * currentHitShake
+				camera.CFrame *= CFrame.Angles(shakePitch, shakeYaw, shakeRoll)
+			end
 		end)
 
 		local cleaned = false
@@ -309,6 +329,7 @@ function CameraController.start()
 			currentParryBlurSize = 0
 			parryBlur.Size = 0
 			currentParryShake = 0
+			currentHitShake = 0
 			local camera = workspace.CurrentCamera
 			if camera then
 				camera.FieldOfView = baseFOV

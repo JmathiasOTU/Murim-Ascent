@@ -47,6 +47,12 @@ return {
 	CameraParryShakeMagnitudeDegrees = 5.0, -- peak random rotational jitter
 	CameraParryShakeDecaySpeed = 14, -- decay-back-to-0 smoothing rate; fast so it reads as a snap, not a wobble
 
+	-- Landed-M1 camera punch (see CameraController) — same rotational-shake mechanism as the parry
+	-- punch above, fired only to the attacker the instant their own hit registers, at a lighter
+	-- magnitude so combos read with impact without fighting the parry punch for attention.
+	CameraHitShakeMagnitudeDegrees = 4.0, -- peak random rotational jitter; lesser than the parry punch
+	CameraHitShakeDecaySpeed = 14, -- decay-back-to-0 smoothing rate; same snap as the parry punch
+
 	-- Slight facing auto-aim for a Critical thrown while airborne (see ClientCombatState.critical) —
 	-- lining up a hitbox precisely mid-fall is hard, so the nearest target roughly in front gets a
 	-- small, capped yaw nudge during the windup only. Never touches Active, so the player is always

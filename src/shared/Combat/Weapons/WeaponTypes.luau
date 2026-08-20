@@ -60,6 +60,8 @@ export type WeaponParryStats = {
 	RecoveryTime: number, -- locked in ParryRecovery after a successful parry (can still move)
 	WhiffCooldown: number, -- lockout on a fresh Parrying window after one whiffs
 	PostureRelief: number, -- posture healed off your own bar the instant a parry lands
+	KnockbackForce: number, -- studs/sec pushed along the parrier's LookVector, applied to the ATTACKER
+	KnockbackDuration: number, -- seconds the push velocity is sustained
 }
 
 export type WeaponAnimations = {

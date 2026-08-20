@@ -52,6 +52,32 @@ local ATTACK_KINDS = {
 -- reproduces the old fixed front-half-only behavior exactly (cos(90°) = 0).
 local BLOCK_FACING_DOT_THRESHOLD = math.cos(math.rad(weaponData.BlockStats.Angle / 2))
 
+-- Shared by Flourish's on-hit knockback and the parry punish shove below: a sustained
+-- LinearVelocity along `direction`, horizontal-only, mass-scaled, released after `duration`.
+local function applyKnockback(rootPart: BasePart, direction: Vector3, force: number, duration: number)
+	if rootPart.Anchored then
+		warn(string.format("[Knockback] %s's HumanoidRootPart is Anchored — the push will have zero visible effect", rootPart.Parent and rootPart.Parent.Name or "?"))
+	end
+
+	local knockbackAttachment = Instance.new("Attachment")
+	knockbackAttachment.Name = "KnockbackAttachment"
+	knockbackAttachment.Parent = rootPart
+
+	local knockbackVelocity = Instance.new("LinearVelocity")
+	knockbackVelocity.Name = "Knockback"
+	knockbackVelocity.Attachment0 = knockbackAttachment
+	knockbackVelocity.RelativeTo = Enum.ActuatorRelativeTo.World
+	knockbackVelocity.ForceLimitsEnabled = true
+	knockbackVelocity.ForceLimitMode = Enum.ForceLimitMode.PerAxis
+	local massForce = rootPart.AssemblyMass * CombatConstants.VelocityConstraintForceMultiplier
+	knockbackVelocity.MaxAxesForce = Vector3.new(massForce, 0, massForce)
+	knockbackVelocity.VectorVelocity = direction * force
+	knockbackVelocity.Parent = rootPart
+
+	Debris:AddItem(knockbackVelocity, duration)
+	Debris:AddItem(knockbackAttachment, duration)
+end
+
 local function isAttackerInFront(attackerHRP: BasePart, targetHRP: BasePart): boolean
 	local toAttacker = attackerHRP.Position - targetHRP.Position
 	if toAttacker.Magnitude < 0.01 then
@@ -115,6 +141,15 @@ local function handleHitRequest(player: Player, action: string, data: { target: 
 			end
 			-- A Parry-role dummy never leaves Parrying — no recovery window to simulate.
 			CombatStateService.forceState(player, CombatStateDefs.Parried)
+
+			-- Punish shove: the ATTACKER gets pushed back along the parrier's facing, as if they
+			-- whiffed into a wall. Light by design — see Fists.ParryStats.KnockbackForce.
+			applyKnockback(
+				attackerHRP,
+				targetHRP.CFrame.LookVector,
+				weaponData.ParryStats.KnockbackForce,
+				weaponData.ParryStats.KnockbackDuration
+			)
 
 			if combatVisualsEvent then
 				-- Parry SFX is weapon-agnostic (CombatConstants.SFX.Parry), so no weaponName needed here.
@@ -200,31 +235,11 @@ local function handleHitRequest(player: Player, action: string, data: { target: 
 	if combatVisualsEvent then
 		combatVisualsEvent:FireAllClients("Hit", targetHRP.Position, EQUIPPED_WEAPON, attackKindName)
 	end
+	CombatStateService.notifyHitLanded(player)
 
-	-- Flourish is the only attack with knockback — a sustained LinearVelocity along the
-	-- attacker's facing, horizontal-only, mass-scaled, released after KnockbackDuration.
+	-- Flourish is the only attack with on-hit knockback.
 	if attackKind.knockbackForce then
-		if targetHRP.Anchored then
-			warn(string.format("[Knockback] %s's HumanoidRootPart is Anchored — the push will have zero visible effect", targetCharacter.Name))
-		end
-
-		local knockbackAttachment = Instance.new("Attachment")
-		knockbackAttachment.Name = "FlourishKnockbackAttachment"
-		knockbackAttachment.Parent = targetHRP
-
-		local knockbackVelocity = Instance.new("LinearVelocity")
-		knockbackVelocity.Name = "FlourishKnockback"
-		knockbackVelocity.Attachment0 = knockbackAttachment
-		knockbackVelocity.RelativeTo = Enum.ActuatorRelativeTo.World
-		knockbackVelocity.ForceLimitsEnabled = true
-		knockbackVelocity.ForceLimitMode = Enum.ForceLimitMode.PerAxis
-		local targetMassForce = targetHRP.AssemblyMass * CombatConstants.VelocityConstraintForceMultiplier
-		knockbackVelocity.MaxAxesForce = Vector3.new(targetMassForce, 0, targetMassForce)
-		knockbackVelocity.VectorVelocity = attackerHRP.CFrame.LookVector * attackKind.knockbackForce
-		knockbackVelocity.Parent = targetHRP
-
-		Debris:AddItem(knockbackVelocity, attackKind.knockbackDuration)
-		Debris:AddItem(knockbackAttachment, attackKind.knockbackDuration)
+		applyKnockback(targetHRP, attackerHRP.CFrame.LookVector, attackKind.knockbackForce, attackKind.knockbackDuration)
 		print(string.format("Knockback: %d studs/sec for %.1fs", attackKind.knockbackForce, attackKind.knockbackDuration))
 	end
 end
