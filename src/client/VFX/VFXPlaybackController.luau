@@ -16,6 +16,7 @@ local started = false
 local AssetsFolder = ReplicatedStorage:WaitForChild("Assets")
 local VFXFolder = AssetsFolder:WaitForChild("VFX")
 local CombatVFXFolder = VFXFolder:WaitForChild("Combat")
+local GeneralCombatVFXFolder = CombatVFXFolder:WaitForChild("General")
 local MovementVFXFolder = VFXFolder:WaitForChild("Movement")
 local CombatSFXFolder = AssetsFolder:WaitForChild("SFX"):WaitForChild("Combat")
 
@@ -145,9 +146,10 @@ local function playLimbTrail(vfxName: string, character: Instance, duration: num
 	end
 end
 
-local function spawnClashSparks(vfxNames, parent: Instance)
+local function spawnClashSparks(vfxNames, parent: Instance, sourceFolder: Instance?)
+	sourceFolder = sourceFolder or CombatVFXFolder
 	for _, vfxName in ipairs(vfxNames) do
-		local vfxPrefab = CombatVFXFolder:FindFirstChild(vfxName)
+		local vfxPrefab = sourceFolder:FindFirstChild(vfxName)
 		if vfxPrefab then
 			local vfxClone = vfxPrefab:Clone()
 			vfxClone.Parent = parent
@@ -158,13 +160,13 @@ local function spawnClashSparks(vfxNames, parent: Instance)
 				end
 			end
 		else
-			warn("Missing " .. vfxName .. " in ReplicatedStorage.Assets.VFX.Combat")
+			warn("Missing " .. vfxName .. " in " .. sourceFolder:GetFullName())
 		end
 	end
 end
 
 -- Reacts to server-broadcast combat clashes. A missing/unrecognized weaponName falls back to silence (VFX still plays).
-local function onCombatVisual(effectType: string, position: Vector3, weaponName: string?)
+local function onCombatVisual(effectType: string, position: Vector3, weaponName: string?, attackKindName: string?)
 	local weaponData = weaponName and WeaponRegistry[weaponName]
 	local weaponSFXFolder = weaponName and getWeaponSFXFolder(weaponName)
 
@@ -201,7 +203,31 @@ local function onCombatVisual(effectType: string, position: Vector3, weaponName:
 			playRandomNamedSound(weaponSFXFolder, weaponData.SFX.Hit, clashAnchor)
 		end
 
+		local impactVFXName = weaponData and attackKindName and weaponData.ImpactVFX[attackKindName]
+		if impactVFXName then
+			spawnClashSparks({ impactVFXName }, clashAnchor, GeneralCombatVFXFolder)
+		end
+
 		Debris:AddItem(clashAnchor, 2)
+
+	elseif effectType == "Swing" then
+		-- Only the "M1" combo (plain + aerial) and its Flourish finisher have swing SFX so far —
+		-- RunningAttack/Critical stay silent here until they get their own dedicated clips.
+		if attackKindName == "M1" or attackKindName == "AerialAttack" or attackKindName == "Flourish" then
+			local clashAnchor = Instance.new("Attachment")
+			clashAnchor.Position = position
+			clashAnchor.Parent = workspace.Terrain
+
+			if weaponData and weaponSFXFolder then
+				if attackKindName == "Flourish" then
+					playRandomNamedSound(weaponSFXFolder, { weaponData.SFX.Flourish }, clashAnchor)
+				else
+					playRandomNamedSound(weaponSFXFolder, weaponData.SFX.Swing, clashAnchor)
+				end
+			end
+
+			Debris:AddItem(clashAnchor, 2)
+		end
 
 	elseif effectType == "Feint" then
 		local clashAnchor = Instance.new("Attachment")

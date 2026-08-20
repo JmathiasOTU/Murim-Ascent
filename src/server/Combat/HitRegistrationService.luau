@@ -162,10 +162,10 @@ local function handleHitRequest(player: Player, action: string, data: { target: 
 		CombatStateService.notifyHitReaction(targetPlayer)
 	end
 
-	-- Broadcast impact sound to everyone, including at a dummy/NPC with no profile to stun. Hit
-	-- SFX is the ATTACKER's weapon.
+	-- Broadcast impact sound/VFX to everyone, including at a dummy/NPC with no profile to stun. Hit
+	-- SFX/VFX is the ATTACKER's weapon; attackKindName picks which of its ImpactVFX entries plays.
 	if combatVisualsEvent then
-		combatVisualsEvent:FireAllClients("Hit", targetHRP.Position, EQUIPPED_WEAPON)
+		combatVisualsEvent:FireAllClients("Hit", targetHRP.Position, EQUIPPED_WEAPON, attackKindName)
 	end
 
 	-- Flourish is the only attack with knockback — a sustained LinearVelocity along the

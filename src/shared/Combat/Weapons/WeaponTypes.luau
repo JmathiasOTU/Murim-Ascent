@@ -36,7 +36,7 @@ export type WeaponVariantStats = {
 	Cooldown: number, -- on cooldown, falls back to a plain M1
 }
 
--- Last hit of the M1 combo — same windup/active/endlag/hitbox as a normal M1, own damage/knockback/anim.
+-- Last hit of the M1 combo — same windup/active/hitbox as a normal M1, own damage/knockback/anim/endlag.
 export type WeaponFlourishStats = {
 	BaseDamage: number,
 	PostureDamage: number,
@@ -44,6 +44,7 @@ export type WeaponFlourishStats = {
 	KnockbackForce: number, -- studs/sec, along the attacker's facing at the moment of the hit
 	KnockbackDuration: number,
 	MaxServerRange: number,
+	EndlagTime: number, -- recovery before a fresh combo can start, distinct from base M1 Endlag
 }
 
 -- Held (F) — shared by Blocking and Parrying (see ClientCombatState.startParrying).
@@ -83,6 +84,17 @@ export type WeaponSFX = {
 	Hit: { string }, -- the ATTACKER's weapon
 	Parry: { string }, -- the DEFENDER's weapon
 	Block: { string }, -- the DEFENDER's weapon
+	Swing: { string }, -- whoosh on M1/AerialAttack windup start; one random clip per swing
+	Flourish: string, -- whoosh on a Flourish windup start; always this one clip
+}
+
+-- Named VFX instances under ReplicatedStorage.Assets.VFX.Combat.General, keyed by attack kind
+-- (same names HitRegistrationService uses) — grouped by damage-type category (Blunt, ...) instead of
+-- per-weapon since multiple weapons can share the same impact look. Played on the TARGET the instant
+-- an unblocked/unparried hit registers. Entries are optional: an attack kind with none just plays no VFX.
+export type WeaponImpactVFX = {
+	M1: string?,
+	AerialAttack: string?,
 }
 
 -- Committed forward LinearVelocity for the whole RunningAttack swing, re-read every frame so you
@@ -129,6 +141,7 @@ export type WeaponData = {
 	AerialAttackCooldown: number,
 	Animations: WeaponAnimations,
 	SFX: WeaponSFX,
+	ImpactVFX: WeaponImpactVFX,
 }
 
 return {}

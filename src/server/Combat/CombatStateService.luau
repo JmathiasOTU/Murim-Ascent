@@ -10,6 +10,10 @@ local RemoteRegistry = require(ReplicatedStorage.Shared.Net.RemoteRegistry)
 
 local CombatStateService = {}
 
+-- TODO: once an Equip system exists, read the player's actual equipped weapon server-side instead
+-- of assuming Fists for everyone (same TODO/assumption as HitRegistrationService).
+local EQUIPPED_WEAPON = "Fists"
+
 -- Server-authoritative ledger: FSM state per player, which targets the current M1_Active window
 -- has already damaged (cleared on every new M1_Windup), and posture (0-100).
 local playerProfiles = {}
@@ -233,6 +237,19 @@ function CombatStateService.start()
 			local hrp = character and character:FindFirstChild("HumanoidRootPart")
 			if hrp then
 				combatVisualsEvent:FireAllClients("Feint", hrp.Position)
+			end
+		end
+
+		-- Same reasoning as Feint above: a swing's whoosh has no hit report to ride along with (a
+		-- whiff never reports a Hit at all), so M1_Windup is the only server-side moment to broadcast
+		-- it from. attackType picks Flourish vs. a random Swing clip client-side; only client-claimed
+		-- (unvalidated) but it's cosmetic-only, same trust level as Feint's own client-driven trigger.
+		if targetState == CombatStateDefs.M1_Windup and combatVisualsEvent then
+			local character = player.Character
+			local hrp = character and character:FindFirstChild("HumanoidRootPart")
+			if hrp then
+				local attackType = (data and data.attackType) or "M1"
+				combatVisualsEvent:FireAllClients("Swing", hrp.Position, EQUIPPED_WEAPON, attackType)
 			end
 		end
 	end)

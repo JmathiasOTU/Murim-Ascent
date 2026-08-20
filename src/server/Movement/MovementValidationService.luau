@@ -201,7 +201,13 @@ function MovementValidationService.start()
 			local targetState = (data and data.targetState) or (action == "RequestDash" and MovementStateDefs.Dashing)
 			local currentState = profile.currentState
 
-			if HARD_STUN_COMBAT_STATES[CombatStateService.getState(player)] then
+			-- Touching down isn't an ability, it's gravity catching up — Humanoid only fires Landed
+			-- once per actual state change, so rejecting it while hard-stunned leaves the profile
+			-- stuck reporting Falling forever (the client has no real landing left to retry once
+			-- the correction snaps it back), long after the stun itself has ended.
+			if HARD_STUN_COMBAT_STATES[CombatStateService.getState(player)]
+				and targetState ~= MovementStateDefs.LightLanding
+				and targetState ~= MovementStateDefs.HeavyLanding then
 				warn(string.format("[Anti-Exploit] %s attempted a movement transition while hard-stunned.", player.Name))
 				sendCorrection(player, profile, MovementStateChanged)
 				return

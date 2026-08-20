@@ -13,7 +13,7 @@ local Fists: WeaponTypes.WeaponData = {
 		ActiveTime = 0.15,
 		EndlagTime = 0,
 		ComboResetTime = 1.2,
-		ComboLength = 5, -- 4 M1 clips + Flourish as the 5th hit
+		ComboLength = 4, -- 3 M1 clips + Flourish as the 4th hit
 		MaxServerRange = 20, -- lenient on purpose, was rejecting legit hits at 6
 	},
 	CriticalStats = {
@@ -25,7 +25,7 @@ local Fists: WeaponTypes.WeaponData = {
 		WindupTime = 0.45,
 		ActiveTime = 0.15,
 		EndlagTime = 0.6,
-		MaxServerRange = 7,
+		MaxServerRange = 20, -- was 7 and rejecting legit hits (e.g. a 7.9-stud Critical), same fix as base M1's MaxServerRange
 		Cooldown = 3.5,
 	},
 	RunningAttackStats = { -- starting guesses, tune freely
@@ -53,7 +53,7 @@ local Fists: WeaponTypes.WeaponData = {
 		MomentumRetention = 0.3, -- fraction of pre-attack horizontal speed carried in
 
 		-- Bigger than the base M1 hitbox — a diving slam should read as a bigger hit than a jab.
-		HitboxSize = Vector3.new(6, 6.5, 6.5),
+		HitboxSize = Vector3.new(7, 7, 7),
 		HitboxOffset = CFrame.new(0, 0, -3.5),
 	},
 	AerialAttackCooldown = 3,
@@ -69,6 +69,7 @@ local Fists: WeaponTypes.WeaponData = {
 		KnockbackForce = 40,
 		KnockbackDuration = 0.4,
 		MaxServerRange = 20, -- same hitbox as M1
+		EndlagTime = 0.5, -- recovery beat before a fresh combo can begin
 	},
 	BlockStats = {
 		WalkSpeed = 6, -- slower than a plain walk (15) -- holding guard costs ground control
@@ -91,7 +92,6 @@ local Fists: WeaponTypes.WeaponData = {
 	},
 	Animations = {
 		M1 = {
-			"rbxassetid://117367450481339",
 			"rbxassetid://111767633192855",
 			"rbxassetid://132254278119474",
 			"rbxassetid://127123512191619",
@@ -116,6 +116,14 @@ local Fists: WeaponTypes.WeaponData = {
 		Hit = { "Hit1", "Hit2" },
 		Parry = { "Parry", "Parry sfx", "Parryv2" },
 		Block = { "Block1", "Block2" },
+		Swing = { "FistSwing1", "FistSwing2", "FistSwing3" },
+		Flourish = "FistFlourish",
+	},
+	ImpactVFX = {
+		-- Named instances under ReplicatedStorage.Assets.VFX.Combat.General — fists are blunt, so these
+		-- are the Blunt-category impact VFX, not a Fists-specific one.
+		M1 = "BluntM1",
+		AerialAttack = "AerialBluntM1",
 	},
 }
 

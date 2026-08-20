@@ -34,4 +34,22 @@ return {
 	CameraHeadSwayStrength = 1, -- multiplier on the raw positional deviation
 	CameraHeadSwayMaxOffset = 1.5, -- studs; caps an extreme animation pose from throwing the camera too far
 	CameraHeadSwaySpeed = 12, -- smoothing rate
+
+	-- Parry impact punch (see CameraController) — a brief decaying blur + rotational shake fired the
+	-- instant a parry resolves, on both sides: the parrier (ParrySuccess cosmetic) and whoever's
+	-- attack just got parried (Parried state). Same numbers for both; no held state, just a spike
+	-- that exponentially decays back to 0 every frame.
+	CameraParryBlurSize = 4, -- peak BlurEffect.Size
+	CameraParryBlurSpeed = 10, -- decay-back-to-0 smoothing rate
+	CameraParryShakeMagnitudeDegrees = 1.5, -- peak random rotational jitter
+	CameraParryShakeDecaySpeed = 14, -- decay-back-to-0 smoothing rate; fast so it reads as a snap, not a wobble
+
+	-- Slight facing auto-aim for a Critical thrown while airborne (see ClientCombatState.critical) —
+	-- lining up a hitbox precisely mid-fall is hard, so the nearest target roughly in front gets a
+	-- small, capped yaw nudge during the windup only. Never touches Active, so the player is always
+	-- the one who actually throws the hit.
+	AerialCritAutoAimRange = 16, -- studs; how far out a target is even considered
+	AerialCritAutoAimConeDegrees = 50, -- half-angle off current facing a target must be within to qualify
+	AerialCritAutoAimMaxCorrectionDegrees = 12, -- hard cap on the total yaw nudge — the "slight" part
+	AerialCritAutoAimTurnSpeed = 8, -- smoothing rate closing the (capped) correction
 }

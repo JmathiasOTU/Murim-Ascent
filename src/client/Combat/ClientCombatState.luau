@@ -33,6 +33,7 @@ local EQUIPPED_WEAPON = "Fists"
 local Stats = WeaponRegistry[EQUIPPED_WEAPON].Stats
 local CriticalStats = WeaponRegistry[EQUIPPED_WEAPON].CriticalStats
 local RunningAttackStats = WeaponRegistry[EQUIPPED_WEAPON].RunningAttackStats
+local FlourishStats = WeaponRegistry[EQUIPPED_WEAPON].FlourishStats
 local RunningAttackDash = WeaponRegistry[EQUIPPED_WEAPON].RunningAttackDash
 local AerialAttackDive = WeaponRegistry[EQUIPPED_WEAPON].AerialAttackDive
 local AerialAttackCooldown = WeaponRegistry[EQUIPPED_WEAPON].AerialAttackCooldown
@@ -231,6 +232,10 @@ function ClientCombatState.start()
 		local lastFeintTime = -math.huge
 		-- release() from the current swing's movement lock, if any — Feint calls this to cut it short.
 		local activeMovementLockRelease: (() -> ())? = nil
+		-- Disconnects the aerial Critical auto-aim Heartbeat, if one is currently running — must be
+		-- torn down on any interrupt (see the ForceState handler below), not just Windup completing
+		-- normally, or a stun/parry mid-windup leaves it spinning the character's facing forever.
+		local activeAerialCritAutoAimRelease: (() -> ())? = nil
 		-- When the current M1_Windup started and how long it lasts — feint() checks these against WindowFraction.
 		local windupStartTime = 0
 		local currentWindupTime = 0
@@ -248,7 +253,9 @@ function ClientCombatState.start()
 			if suppressNextEcho then
 				suppressNextEcho = false
 			else
-				CombatIntent:FireServer("UpdateState", { targetState = newState })
+				-- attackType only matters to the server when newState is M1_Windup (see
+				-- CombatStateService's Swing SFX broadcast) — harmless noise on every other transition.
+				CombatIntent:FireServer("UpdateState", { targetState = newState, attackType = ClientCombatState.AttackType })
 			end
 
 			-- BlockBreak/Parried/Stunned are always server-pushed (see HitRegistrationService), so
@@ -311,6 +318,21 @@ function ClientCombatState.start()
 			for taskName, activeTask in pairs(activeTasks) do
 				task.cancel(activeTask)
 				activeTasks[taskName] = nil
+			end
+
+			-- A server-forced state (parried, stunned, ...) ends whatever swing was in flight right
+			-- now, not whenever that swing's own timer gets around to it. Without this, an interrupted
+			-- RunningAttack/AerialAttack leaves its velocity lock and (for AerialAttack) disabled
+			-- collision running until its own task.delay fires later — and if a second dive had
+			-- already stacked on top by then, that later release can restore collision from a stale
+			-- "already disabled" snapshot, permanently ghosting the character.
+			if activeMovementLockRelease then
+				activeMovementLockRelease()
+				activeMovementLockRelease = nil
+			end
+			if activeAerialCritAutoAimRelease then
+				activeAerialCritAutoAimRelease()
+				activeAerialCritAutoAimRelease = nil
 			end
 
 			pendingStunDuration = durationOverride
@@ -560,6 +582,9 @@ function ClientCombatState.start()
 			-- Which stats govern this swing. Flourish rides base M1 timing/hitbox; RunningAttack has
 			-- its own set; AerialAttack can override just the hitbox.
 			local activeStats = if attackType == "RunningAttack" then RunningAttackStats else Stats
+			-- Flourish shares base M1 windup/active/hitbox but gets its own (longer) recovery so the
+			-- combo can't restart instantly off the finisher.
+			local endlagTime = if attackType == "Flourish" then FlourishStats.EndlagTime else activeStats.EndlagTime
 			local sweepStats = activeStats
 			if attackType == "AerialAttack" and (AerialAttackDive.HitboxSize or AerialAttackDive.HitboxOffset) then
 				sweepStats = {
@@ -579,6 +604,13 @@ function ClientCombatState.start()
 				return
 			end
 			lastSwingTime = os.clock()
+			-- A chained RunningAttack/AerialAttack can legitimately start before the previous swing's
+			-- own lock-release timer has fired (both target the same instant, so ordering between them
+			-- isn't guaranteed) — release it now instead of leaving two overlapping locks/snapshots
+			-- racing each other (see the ForceState handler above for what that race causes).
+			if activeMovementLockRelease then
+				activeMovementLockRelease()
+			end
 			activeMovementLockRelease = nil
 			windupStartTime = lastSwingTime
 			currentWindupTime = activeStats.WindupTime
@@ -598,7 +630,7 @@ function ClientCombatState.start()
 				scheduleTask("CombatFlow", activeStats.ActiveTime, function()
 					if not fsm:transition(CombatStateDefs.M1_Endlag) then return end
 
-					scheduleTask("CombatFlow", activeStats.EndlagTime, function()
+					scheduleTask("CombatFlow", endlagTime, function()
 						if groundedComboType == "M1" then
 							comboStep = (comboStep % Stats.ComboLength) + 1
 						end
@@ -610,6 +642,42 @@ function ClientCombatState.start()
 					end)
 				end)
 			end)
+		end
+
+		-- Nearest valid target roughly in front, within CombatConstants.AerialCritAutoAimRange/Cone —
+		-- feeds the slight windup-only facing nudge in critical() below.
+		local AERIAL_CRIT_AUTOAIM_CONE_DOT = math.cos(math.rad(CombatConstants.AerialCritAutoAimConeDegrees))
+		local function findAerialCritAutoAimTarget(): BasePart?
+			local searchParams = OverlapParams.new()
+			searchParams.FilterType = Enum.RaycastFilterType.Exclude
+			searchParams.FilterDescendantsInstances = { character }
+
+			local parts = workspace:GetPartBoundsInRadius(hrp.Position, CombatConstants.AerialCritAutoAimRange, searchParams)
+
+			local seenCharacters = {}
+			local bestTargetHRP: BasePart? = nil
+			local bestDot = AERIAL_CRIT_AUTOAIM_CONE_DOT
+
+			for _, part in ipairs(parts) do
+				local targetCharacter = part.Parent
+				if targetCharacter and not seenCharacters[targetCharacter] then
+					seenCharacters[targetCharacter] = true
+					local targetHumanoid = targetCharacter:FindFirstChild("Humanoid")
+					local targetHRP = targetCharacter:FindFirstChild("HumanoidRootPart")
+					if targetHumanoid and targetHRP and targetHumanoid.Health > 0 then
+						local toTarget = targetHRP.Position - hrp.Position
+						if toTarget.Magnitude > 0.01 then
+							local dot = hrp.CFrame.LookVector:Dot(toTarget.Unit)
+							if dot > bestDot then
+								bestDot = dot
+								bestTargetHRP = targetHRP
+							end
+						end
+					end
+				end
+			end
+
+			return bestTargetHRP
 		end
 
 		-- Critical: a single heavier hit, only startable from Idle, no combo/buffering. On cooldown it just doesn't fire.
@@ -628,7 +696,43 @@ function ClientCombatState.start()
 			end
 			lastCriticalTime = now
 
+			-- Slight auto-aim: airborne Criticals are hard to line up precisely mid-fall, so nudge
+			-- facing toward the nearest target in front during the windup only — Active always sweeps
+			-- off whatever facing the player actually ends up with. Registered on the outer-scoped
+			-- activeAerialCritAutoAimRelease (not a local), so an interrupt mid-windup (see the
+			-- ForceState handler above) can still tear it down instead of leaving it spinning forever.
+			local movementFSM = ClientMovementState.CurrentFSM
+			if movementFSM and movementFSM.CurrentState == MovementStateDefs.Falling then
+				local autoAimTargetHRP = findAerialCritAutoAimTarget()
+				if autoAimTargetHRP then
+					local maxCorrection = math.rad(CombatConstants.AerialCritAutoAimMaxCorrectionDegrees)
+					local autoAimConnection: RBXScriptConnection
+					autoAimConnection = RunService.Heartbeat:Connect(function(dt)
+						local toTarget = autoAimTargetHRP.Position - hrp.Position
+						toTarget = Vector3.new(toTarget.X, 0, toTarget.Z)
+						if toTarget.Magnitude < 0.01 then return end
+
+						local currentLook = hrp.CFrame.LookVector
+						local currentAngle = math.atan2(currentLook.X, currentLook.Z)
+						local targetAngle = math.atan2(toTarget.X, toTarget.Z)
+						local delta = (targetAngle - currentAngle + math.pi) % (2 * math.pi) - math.pi
+						delta = math.clamp(delta, -maxCorrection, maxCorrection)
+
+						local turnAlpha = 1 - math.exp(-CombatConstants.AerialCritAutoAimTurnSpeed * dt)
+						hrp.CFrame = CFrame.new(hrp.Position) * CFrame.Angles(0, currentAngle + delta * turnAlpha, 0)
+					end)
+					activeAerialCritAutoAimRelease = function()
+						autoAimConnection:Disconnect()
+					end
+				end
+			end
+
 			scheduleTask("CombatFlow", CriticalStats.WindupTime, function()
+				if activeAerialCritAutoAimRelease then
+					activeAerialCritAutoAimRelease()
+					activeAerialCritAutoAimRelease = nil
+				end
+
 				if not fsm:transition(CombatStateDefs.Critical_Active) then return end
 				performHitboxSweep(CriticalStats, CombatStateDefs.Critical_Active, "Critical")
 

@@ -59,6 +59,26 @@ local function setupCharacterAnimations(fsm, character)
 
 	local currentTrack = nil
 
+	-- The combat-idle stance is only meant for standing still — moving (walk/run) should show the
+	-- Humanoid's normal movement animations underneath instead of this looped stance fighting it.
+	local isMoving = false
+	local function refreshIdleTrack()
+		if not idleTrack then return end
+		local shouldPlay = ClientCombatState.IsEquipped and fsm.CurrentState == CombatStateDefs.Idle and not isMoving
+		if shouldPlay then
+			if not idleTrack.IsPlaying then
+				idleTrack:Play(0.1)
+			end
+		elseif idleTrack.IsPlaying then
+			idleTrack:Stop(0.1)
+		end
+	end
+
+	local runningConnection = humanoid.Running:Connect(function(speed)
+		isMoving = speed > 0.5
+		refreshIdleTrack()
+	end)
+
 	local stateChangedConnection = fsm.StateChanged:Connect(function(_oldState, newState)
 		-- The combat-idle stance is Action priority same as every other clip here, so it has to be
 		-- explicitly stopped before anything else plays or the two blend together.
@@ -133,9 +153,7 @@ local function setupCharacterAnimations(fsm, character)
 			if parryTrack and parryTrack.IsPlaying then
 				parryTrack:Stop(0.1)
 			end
-			if ClientCombatState.IsEquipped and idleTrack then
-				idleTrack:Play(0.1)
-			end
+			refreshIdleTrack()
 		elseif newState == CombatStateDefs.Feint and currentTrack then
 			-- Cut the windup clip short, same as reaching Idle does.
 			currentTrack:Stop(0.1)
@@ -187,13 +205,9 @@ local function setupCharacterAnimations(fsm, character)
 		if isEquippedNow then
 			if equipTrack then
 				equipTrack:Play(0.05)
-				equipTrack.Stopped:Once(function()
-					if ClientCombatState.IsEquipped and fsm.CurrentState == CombatStateDefs.Idle and idleTrack then
-						idleTrack:Play(0.1)
-					end
-				end)
-			elseif idleTrack then
-				idleTrack:Play(0.1)
+				equipTrack.Stopped:Once(refreshIdleTrack)
+			else
+				refreshIdleTrack()
 			end
 		else
 			if idleTrack and idleTrack.IsPlaying then
@@ -207,9 +221,7 @@ local function setupCharacterAnimations(fsm, character)
 
 	-- Fists start equipped by default (see ClientCombatState.IsEquipped) — EquipChanged only fires on
 	-- a manual toggle, so the initial idle stance has to be kicked off here instead.
-	if ClientCombatState.IsEquipped and idleTrack and fsm.CurrentState == CombatStateDefs.Idle then
-		idleTrack:Play(0.1)
-	end
+	refreshIdleTrack()
 
 	local cleaned = false
 	local function cleanup()
@@ -218,6 +230,7 @@ local function setupCharacterAnimations(fsm, character)
 		stateChangedConnection:Disconnect()
 		combatCosmeticConnection:Disconnect()
 		equipChangedConnection:Disconnect()
+		runningConnection:Disconnect()
 	end
 
 	humanoid.Died:Once(cleanup)

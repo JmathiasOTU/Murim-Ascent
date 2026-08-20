@@ -8,6 +8,8 @@ local MovementStateDefs = require(ReplicatedStorage.Shared.Movement.MovementStat
 local MovementConstants = require(ReplicatedStorage.Shared.Movement.MovementConstants)
 local ClientCombatState = require(script.Parent.Parent.Combat.ClientCombatState)
 local CombatConstants = require(ReplicatedStorage.Shared.Combat.CombatConstants)
+local CombatStateDefs = require(ReplicatedStorage.Shared.Combat.CombatStates.CombatStateDefs)
+local RemoteRegistry = require(ReplicatedStorage.Shared.Net.RemoteRegistry)
 
 local CameraController = {}
 
@@ -64,12 +66,54 @@ function CameraController.start()
 	local targetBlurSize = 0
 	local currentTreeJumpZoom = 0
 	local currentHeadSway = Vector3.zero
+	local currentParryBlurSize = 0
+	local currentParryShake = 0
 
 	-- One persistent effect for the whole client session, not per-character.
 	local treeJumpBlur = Instance.new("BlurEffect")
 	treeJumpBlur.Name = "QinggongTreeJumpBlur"
 	treeJumpBlur.Size = 0
 	treeJumpBlur.Parent = Lighting
+
+	local parryBlur = Instance.new("BlurEffect")
+	parryBlur.Name = "QinggongParryBlur"
+	parryBlur.Size = 0
+	parryBlur.Parent = Lighting
+
+	-- Parry impact punch: a one-shot spike that exponentially decays back to 0 every render step
+	-- (see the RenderStep bind below), not a held target like the other camera effects here.
+	local function triggerParryImpact()
+		currentParryBlurSize = CombatConstants.CameraParryBlurSize
+		currentParryShake = math.rad(CombatConstants.CameraParryShakeMagnitudeDegrees)
+	end
+
+	-- Fires on both the parrier (ParrySuccess cosmetic ping) and whoever's attack just got parried
+	-- (Parried FSM state) — neither is scoped to a specific character, so these are session-level.
+	local CombatIntent = RemoteRegistry.getEvent("CombatIntent")
+	CombatIntent.OnClientEvent:Connect(function(action)
+		if action == "ParrySuccess" then
+			triggerParryImpact()
+		end
+	end)
+	ClientCombatState.FSMReady:Connect(function(combatFsm, combatCharacter)
+		local combatStateConnection = combatFsm.StateChanged:Connect(function(_oldState, newState)
+			if newState == CombatStateDefs.Parried then
+				triggerParryImpact()
+			end
+		end)
+
+		local combatHumanoid = combatCharacter:FindFirstChildOfClass("Humanoid")
+		if combatHumanoid then
+			combatHumanoid.Died:Once(function()
+				combatStateConnection:Disconnect()
+			end)
+		end
+		combatCharacter.AncestryChanged:Connect(function(_, parent)
+			if not parent then
+				combatStateConnection:Disconnect()
+			end
+		end)
+	end)
 
 	ClientMovementState.FSMReady:Connect(function(fsm, character)
 		local humanoid = character:WaitForChild("Humanoid")
@@ -218,6 +262,20 @@ function CameraController.start()
 			currentHeadSway += (targetHeadSway - currentHeadSway) * headSwayAlpha
 
 			camera.CFrame *= CFrame.new(currentHeadSway)
+
+			-- Parry impact punch: one-shot spike (see triggerParryImpact above) decaying back to 0.
+			local parryBlurAlpha = 1 - math.exp(-CombatConstants.CameraParryBlurSpeed * dt)
+			currentParryBlurSize += (0 - currentParryBlurSize) * parryBlurAlpha
+			parryBlur.Size = currentParryBlurSize
+
+			local parryShakeAlpha = 1 - math.exp(-CombatConstants.CameraParryShakeDecaySpeed * dt)
+			currentParryShake += (0 - currentParryShake) * parryShakeAlpha
+			if currentParryShake > 0.0001 then
+				local shakePitch = (math.random() * 2 - 1) * currentParryShake
+				local shakeYaw = (math.random() * 2 - 1) * currentParryShake
+				local shakeRoll = (math.random() * 2 - 1) * currentParryShake
+				camera.CFrame *= CFrame.Angles(shakePitch, shakeYaw, shakeRoll)
+			end
 		end)
 
 		local cleaned = false
@@ -248,6 +306,9 @@ function CameraController.start()
 			treeJumpBlur.Size = 0
 			currentTreeJumpZoom = 0
 			currentHeadSway = Vector3.zero
+			currentParryBlurSize = 0
+			parryBlur.Size = 0
+			currentParryShake = 0
 			local camera = workspace.CurrentCamera
 			if camera then
 				camera.FieldOfView = baseFOV
