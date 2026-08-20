@@ -90,6 +90,9 @@ local MOVEMENT_LOCKED_STATES = {
 }
 
 local function isMovementLocked(): boolean
+	if ClientMovementState.RollCancelRecovering then
+		return true
+	end
 	local movementFSM = ClientMovementState.CurrentFSM
 	return movementFSM ~= nil and MOVEMENT_LOCKED_STATES[movementFSM.CurrentState] == true
 end

@@ -4,6 +4,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Debris = game:GetService("Debris")
 
 local CombatStateService = require(script.Parent.CombatStateService)
+local DummyCombatService = require(script.Parent.DummyCombatService)
 local MovementValidationService = require(script.Parent.Parent.Movement.MovementValidationService)
 local CombatStateDefs = require(ReplicatedStorage.Shared.Combat.CombatStates.CombatStateDefs)
 local CombatConstants = require(ReplicatedStorage.Shared.Combat.CombatConstants)
@@ -84,25 +85,40 @@ local function handleHitRequest(player: Player, action: string, data: { target: 
 	if targetPlayer then
 		local targetMovementState = MovementValidationService.getState(targetPlayer)
 		if targetMovementState and IFRAME_MOVEMENT_STATES[targetMovementState] then
+			-- Dodged clean: leave an afterimage at the spot the target was actually standing in when
+			-- the hit would've landed. Reach-gated the same as a real hit so a claim from across the
+			-- map can't spam the effect on someone who was never actually threatened.
+			if combatVisualsEvent and (attackerHRP.Position - targetHRP.Position).Magnitude <= attackKind.maxRange then
+				combatVisualsEvent:FireAllClients("Dodge", nil, nil, nil, targetCharacter, targetHRP.CFrame)
+			end
 			return
 		end
 	end
 
+	-- Target's combat state — a real player's own (CombatStateService) or, if this hit landed on an
+	-- NPC training dummy instead (see CombatDummyController), its parallel DummyCombatService one.
+	-- Every check below reads this instead of calling either service directly, so a dummy's
+	-- Parry/Block role plugs into the exact same logic a real player's does.
+	local targetCombatState = if targetPlayer then CombatStateService.getState(targetPlayer) else DummyCombatService.getState(targetCharacter)
+
 	-- Parrying: zero damage, and the ATTACKER gets forced into Parried while the target goes to
 	-- ParryRecovery (free to follow up after ParryStats.RecoveryTime, not instantly). Checked
 	-- before Blocking and before dedup registration for the same reason i-frames are.
-	if targetPlayer and CombatStateService.getState(targetPlayer) == CombatStateDefs.Parrying then
+	if targetCombatState == CombatStateDefs.Parrying then
 		if isAttackerInFront(attackerHRP, targetHRP) then
-			print(string.format("%s PARRIED %s's %s!", targetPlayer.Name, player.Name, attackKindName))
+			print(string.format("%s PARRIED %s's %s!", targetCharacter.Name, player.Name, attackKindName))
 
-			CombatStateService.forceState(targetPlayer, CombatStateDefs.ParryRecovery)
-			CombatStateService.notifyParrySuccess(targetPlayer)
+			if targetPlayer then
+				CombatStateService.forceState(targetPlayer, CombatStateDefs.ParryRecovery)
+				CombatStateService.notifyParrySuccess(targetPlayer)
+				CombatStateService.relievePosture(targetPlayer, weaponData.ParryStats.PostureRelief)
+			end
+			-- A Parry-role dummy never leaves Parrying — no recovery window to simulate.
 			CombatStateService.forceState(player, CombatStateDefs.Parried)
-			CombatStateService.relievePosture(targetPlayer, weaponData.ParryStats.PostureRelief)
 
 			if combatVisualsEvent then
-				-- Parry SFX is the DEFENDER's weapon; hardcoded to EQUIPPED_WEAPON until an Equip system exists.
-				combatVisualsEvent:FireAllClients("Parry", (attackerHRP.Position + targetHRP.Position) / 2, EQUIPPED_WEAPON)
+				-- Parry SFX is weapon-agnostic (CombatConstants.SFX.Parry), so no weaponName needed here.
+				combatVisualsEvent:FireAllClients("Parry", (attackerHRP.Position + targetHRP.Position) / 2)
 			end
 
 			return
@@ -111,13 +127,21 @@ local function handleHitRequest(player: Player, action: string, data: { target: 
 
 	-- Blocking: absorbs the hit into posture instead of damage, only if the attacker is in front.
 	-- Checked before dedup for the same reason i-frames are.
-	if targetPlayer and CombatStateService.getState(targetPlayer) == CombatStateDefs.Blocking then
+	if targetCombatState == CombatStateDefs.Blocking then
 		if isAttackerInFront(attackerHRP, targetHRP) then
-			local brokeGuard = CombatStateService.addPosture(targetPlayer, attackKind.postureDamage)
+			local brokeGuard, posture
+			if targetPlayer then
+				brokeGuard = CombatStateService.addPosture(targetPlayer, attackKind.postureDamage)
+				posture = CombatStateService.getPosture(targetPlayer)
+			else
+				brokeGuard = DummyCombatService.addPosture(targetCharacter, attackKind.postureDamage)
+				posture = DummyCombatService.getPosture(targetCharacter)
+			end
+
 			print(string.format(
 				"%s blocked %s's %s: +%d posture (%.0f/%.0f)",
-				targetPlayer.Name, player.Name, attackKindName, attackKind.postureDamage,
-				CombatStateService.getPosture(targetPlayer), CombatConstants.MaxPosture
+				targetCharacter.Name, player.Name, attackKindName, attackKind.postureDamage,
+				posture, CombatConstants.MaxPosture
 			))
 
 			if combatVisualsEvent then
@@ -125,12 +149,21 @@ local function handleHitRequest(player: Player, action: string, data: { target: 
 			end
 
 			if brokeGuard then
-				CombatStateService.resetPosture(targetPlayer)
-				CombatStateService.forceState(targetPlayer, CombatStateDefs.BlockBreak)
-				print(string.format("%s's guard broke!", targetPlayer.Name))
-			else
+				if targetPlayer then
+					CombatStateService.resetPosture(targetPlayer)
+					CombatStateService.forceState(targetPlayer, CombatStateDefs.BlockBreak)
+				else
+					DummyCombatService.resetPosture(targetCharacter)
+					DummyCombatService.setState(targetCharacter, CombatStateDefs.BlockBreak)
+				end
+				if combatVisualsEvent then
+					combatVisualsEvent:FireAllClients("GuardBreak", targetHRP.Position)
+				end
+				print(string.format("%s's guard broke!", targetCharacter.Name))
+			elseif targetPlayer then
 				-- Guard held: play the blocker's impact-reaction animation (skipped on a
-				-- guard-break, whose own forceState animation would just stomp it).
+				-- guard-break, whose own forceState animation would just stomp it). No dummy
+				-- equivalent to notify — CombatDummyController doesn't have a per-hit reaction anim.
 				CombatStateService.notifyBlockSuccess(targetPlayer)
 			end
 			return
@@ -159,7 +192,7 @@ local function handleHitRequest(player: Player, action: string, data: { target: 
 	-- second combo hit refresh the stun clock instead of getting dropped as "already there."
 	if targetPlayer then
 		CombatStateService.forceState(targetPlayer, CombatStateDefs.Stunned, attackKind.stunTime)
-		CombatStateService.notifyHitReaction(targetPlayer)
+		CombatStateService.notifyHitReaction(targetPlayer, attackKind.knockbackForce ~= nil)
 	end
 
 	-- Broadcast impact sound/VFX to everyone, including at a dummy/NPC with no profile to stun. Hit

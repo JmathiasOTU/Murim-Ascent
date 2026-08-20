@@ -4,6 +4,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ClientCombatState = require(script.Parent.ClientCombatState)
 local CombatStateDefs = require(ReplicatedStorage.Shared.Combat.CombatStates.CombatStateDefs)
 local WeaponRegistry = require(ReplicatedStorage.Shared.Combat.Weapons.WeaponRegistry)
+local CombatAnimations = require(ReplicatedStorage.Shared.Combat.CombatAnimations)
 local RemoteRegistry = require(ReplicatedStorage.Shared.Net.RemoteRegistry)
 
 local AnimationController = {}
@@ -48,14 +49,16 @@ local function setupCharacterAnimations(fsm, character)
 	local equipTrack = loadTrack(animator, weaponAnims.Equip)
 	local unequipTrack = loadTrack(animator, weaponAnims.Unequip)
 
-	-- Hit-reaction clips, alternated (not random). hitCount reads off the raw config array since a
-	-- nil hole from an empty/unset id makes # on hitTracks itself unreliable.
+	-- Hit-reaction clips, weapon-agnostic (see CombatAnimations), alternated (not random). hitCount
+	-- reads off the raw config array since a nil hole from an empty/unset id makes # on hitTracks
+	-- itself unreliable.
 	local hitTracks = {}
-	for step, animId in ipairs(weaponAnims.Hit) do
+	for step, animId in ipairs(CombatAnimations.Hit) do
 		hitTracks[step] = loadTrack(animator, animId)
 	end
-	local hitCount = #weaponAnims.Hit
+	local hitCount = #CombatAnimations.Hit
 	local nextHitTrack = 1
+	local knockBackTrack = loadTrack(animator, CombatAnimations.KnockBack)
 
 	local currentTrack = nil
 
@@ -165,7 +168,7 @@ local function setupCharacterAnimations(fsm, character)
 	-- HitReaction fires on every landed hit (including a same-state refresh mid-combo, which never
 	-- re-fires StateChanged), so it's the one place hit-reaction animation is ever triggered from.
 	local CombatIntent = RemoteRegistry.getEvent("CombatIntent")
-	local combatCosmeticConnection = CombatIntent.OnClientEvent:Connect(function(action)
+	local combatCosmeticConnection = CombatIntent.OnClientEvent:Connect(function(action, hasKnockback)
 		if action == "ParrySuccess" then
 			if parryTrack and parryTrack.IsPlaying then
 				parryTrack:Stop(0.1)
@@ -189,6 +192,11 @@ local function setupCharacterAnimations(fsm, character)
 			end
 			if parryTrack and parryTrack.IsPlaying then
 				parryTrack:Stop(0.1)
+			end
+
+			if hasKnockback and knockBackTrack then
+				knockBackTrack:Play(0.05)
+				return
 			end
 
 			local hitTrack = hitTracks[nextHitTrack]

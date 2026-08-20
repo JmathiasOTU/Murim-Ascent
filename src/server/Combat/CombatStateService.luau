@@ -104,9 +104,10 @@ end
 
 -- Cosmetic-only, fired alongside every forceState(player, Stunned, ...) call including refreshes
 -- mid-stun — deliberately unconditional so every landed hit flinches you, even back-to-back ones.
-function CombatStateService.notifyHitReaction(player: Player)
+-- hasKnockback picks CombatAnimations.KnockBack over the alternating Hit clips client-side.
+function CombatStateService.notifyHitReaction(player: Player, hasKnockback: boolean?)
 	if combatIntentEvent then
-		combatIntentEvent:FireClient(player, "HitReaction")
+		combatIntentEvent:FireClient(player, "HitReaction", hasKnockback == true)
 	end
 end
 
@@ -240,11 +241,11 @@ function CombatStateService.start()
 			end
 		end
 
-		-- Same reasoning as Feint above: a swing's whoosh has no hit report to ride along with (a
-		-- whiff never reports a Hit at all), so M1_Windup is the only server-side moment to broadcast
-		-- it from. attackType picks Flourish vs. a random Swing clip client-side; only client-claimed
-		-- (unvalidated) but it's cosmetic-only, same trust level as Feint's own client-driven trigger.
-		if targetState == CombatStateDefs.M1_Windup and combatVisualsEvent then
+		-- Same reasoning as Feint above: a swing's whoosh (or Critical's windup cue) has no hit report
+		-- to ride along with (a whiff never reports a Hit at all), so *_Windup is the only server-side
+		-- moment to broadcast it from. attackType picks which clip plays client-side; only
+		-- client-claimed (unvalidated) but it's cosmetic-only, same trust level as Feint's own trigger.
+		if (targetState == CombatStateDefs.M1_Windup or targetState == CombatStateDefs.Critical_Windup) and combatVisualsEvent then
 			local character = player.Character
 			local hrp = character and character:FindFirstChild("HumanoidRootPart")
 			if hrp then

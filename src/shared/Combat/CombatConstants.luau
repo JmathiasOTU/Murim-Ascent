@@ -19,12 +19,15 @@ return {
 	-- constraints (Flourish knockback, RunningAttack/AerialAttack dashes).
 	VelocityConstraintForceMultiplier = 1000,
 
-	-- Weapon-agnostic combat SFX — same set of clips regardless of what's equipped, unlike
-	-- WeaponTypes.WeaponSFX (Hit/Parry/Block, which vary per weapon). Named Sound instances live
-	-- under ReplicatedStorage.Assets.SFX.Combat.General instead of a per-weapon subfolder — see
-	-- VFXPlaybackController.getGeneralSFXFolder for the lookup side.
+	-- Weapon- and category-agnostic combat SFX — same clips regardless of what's equipped or its
+	-- WeaponCategoryDefs category, unlike WeaponCategorySFX (Hit/Block, which vary per category) and
+	-- WeaponTypes.WeaponSFX (Swing/Flourish, which vary per weapon). Named Sound instances live under
+	-- ReplicatedStorage.Assets.SFX.Combat.General — see VFXPlaybackController.getGeneralSFXFolder.
 	SFX = {
-		Feint = { "Feint1", "Feint2" }, -- plays for every weapon's Feint, not just Fists'
+		Feint = { "Feint" },
+		Critical = { "Critical" }, -- Critical's landed-hit sound; not category-based like a plain M1's
+		Parry = { "Parry0", "Parry1", "Parry2" }, -- the DEFENDER's parry landing, regardless of either weapon
+		GuardBreak = { "GuardBreak" }, -- posture maxed out while Blocking, regardless of either weapon
 	},
 
 	-- Combat-only camera head sway (see CameraController) — the camera picks up a smoothed offset
@@ -39,9 +42,9 @@ return {
 	-- instant a parry resolves, on both sides: the parrier (ParrySuccess cosmetic) and whoever's
 	-- attack just got parried (Parried state). Same numbers for both; no held state, just a spike
 	-- that exponentially decays back to 0 every frame.
-	CameraParryBlurSize = 4, -- peak BlurEffect.Size
+	CameraParryBlurSize = 14, -- peak BlurEffect.Size
 	CameraParryBlurSpeed = 10, -- decay-back-to-0 smoothing rate
-	CameraParryShakeMagnitudeDegrees = 1.5, -- peak random rotational jitter
+	CameraParryShakeMagnitudeDegrees = 5.0, -- peak random rotational jitter
 	CameraParryShakeDecaySpeed = 14, -- decay-back-to-0 smoothing rate; fast so it reads as a snap, not a wobble
 
 	-- Slight facing auto-aim for a Critical thrown while airborne (see ClientCombatState.critical) —

@@ -21,6 +21,26 @@ local HARD_STUN_COMBAT_STATES = {
 	[CombatStateDefs.Stunned] = true,
 }
 
+-- Passive/neutral states — not an ABILITY a hard stun should block, just gravity/physics finishing
+-- what's already in motion (falling -> landing -> back to standing) or plain baseline movement.
+-- Exempting these from the hard-stun gate is safe: the actual speed cap during a hard stun is
+-- enforced independently client-side (ClientCombatState.lockMovementForStun pins Humanoid.WalkSpeed
+-- and re-asserts it on any change), regardless of which movement state the FSM itself reports — so
+-- letting the STATE advance here can't be used to bypass the stun's real effect. Each of these is a
+-- one-shot transition fired off a timer with no retry, so rejecting any one of them the instant it
+-- fires — not just Falling's own landing — leaves the profile stuck reporting that state forever,
+-- long after the combat stun itself has ended (the exact bug this table exists to prevent).
+local HARD_STUN_EXEMPT_TARGET_STATES = {
+	[MovementStateDefs.LightLanding] = true,
+	[MovementStateDefs.HeavyLanding] = true,
+	[MovementStateDefs.Idle] = true,
+	[MovementStateDefs.Walking] = true,
+	[MovementStateDefs.Running] = true,
+	[MovementStateDefs.Sprinting] = true,
+	[MovementStateDefs.Crouching] = true,
+	[MovementStateDefs.CrouchWalking] = true,
+}
+
 local playerProfiles = {}
 local pendingUnanchor = {}
 
@@ -132,6 +152,23 @@ local function isImplausibleSpeed(profile, character, now)
 	return speed > MovementConstants.MaxPlausibleSpeed
 end
 
+-- Lazily catches the profile's rollCancelCharges up to what elapsed time since the last check would
+-- have regenerated, capped at RollCancelMaxCharges — no background ticker needed for a per-player
+-- resource this low-frequency.
+local function regenRollCancelCharges(profile, now)
+	if profile.rollCancelCharges >= MovementConstants.RollCancelMaxCharges then
+		profile.rollCancelChargeRegenStart = now
+		return
+	end
+
+	local elapsed = now - profile.rollCancelChargeRegenStart
+	local gained = math.floor(elapsed / MovementConstants.RollCancelChargeCooldown)
+	if gained > 0 then
+		profile.rollCancelCharges = math.min(MovementConstants.RollCancelMaxCharges, profile.rollCancelCharges + gained)
+		profile.rollCancelChargeRegenStart += gained * MovementConstants.RollCancelChargeCooldown
+	end
+end
+
 local function isRateLimited(profile, now)
 	if now - profile.intentWindowStart >= 1 then
 		profile.intentWindowStart = now
@@ -160,6 +197,8 @@ function MovementValidationService.start()
 			lastPosition = nil,
 			lastPositionCheckTime = 0,
 			wallJumpUsesRemaining = MovementConstants.WallJumpMaxUses,
+			rollCancelCharges = MovementConstants.RollCancelMaxCharges,
+			rollCancelChargeRegenStart = os.clock(),
 		}
 
 		player.CharacterAdded:Connect(function()
@@ -167,6 +206,8 @@ function MovementValidationService.start()
 			profile.currentState = MovementStateDefs.Idle
 			profile.lastPosition = nil
 			profile.wallJumpUsesRemaining = MovementConstants.WallJumpMaxUses
+			profile.rollCancelCharges = MovementConstants.RollCancelMaxCharges
+			profile.rollCancelChargeRegenStart = os.clock()
 		end)
 	end)
 
@@ -197,17 +238,19 @@ function MovementValidationService.start()
 			return
 		end
 
-		if action == "UpdateState" or action == "RequestDash" then
+		if action == "UpdateState" or action == "RequestDash" or action == "RollCancel" then
 			local targetState = (data and data.targetState) or (action == "RequestDash" and MovementStateDefs.Dashing)
 			local currentState = profile.currentState
 
-			-- Touching down isn't an ability, it's gravity catching up — Humanoid only fires Landed
-			-- once per actual state change, so rejecting it while hard-stunned leaves the profile
-			-- stuck reporting Falling forever (the client has no real landing left to retry once
-			-- the correction snaps it back), long after the stun itself has ended.
+			-- A duplicate/no-op echo of the state we already have — nothing to validate or correct.
+			-- MovementTransitionTable entries don't list self-transitions, so without this a same-state
+			-- request would otherwise fall through and warn as a false-positive "illegal transition."
+			if currentState == targetState then
+				return
+			end
+
 			if HARD_STUN_COMBAT_STATES[CombatStateService.getState(player)]
-				and targetState ~= MovementStateDefs.LightLanding
-				and targetState ~= MovementStateDefs.HeavyLanding then
+				and not HARD_STUN_EXEMPT_TARGET_STATES[targetState] then
 				warn(string.format("[Anti-Exploit] %s attempted a movement transition while hard-stunned.", player.Name))
 				sendCorrection(player, profile, MovementStateChanged)
 				return
@@ -218,6 +261,26 @@ function MovementValidationService.start()
 				warn(string.format("[Anti-Exploit] %s attempted illegal transition: %s -> %s", player.Name, tostring(currentState), tostring(targetState)))
 				sendCorrection(player, profile, MovementStateChanged)
 				return
+			end
+
+			-- Roll cancel: a DEDICATED action (not inferred from timing) — leaving Dashing early also
+			-- happens for reasons that have nothing to do with the cancel button and must stay free:
+			-- jump-canceling a dash, and the wall-collision safety stop (see ClientMovementState's
+			-- own Raycast-ahead-while-Dashing check). Gating those the same as a real roll cancel left
+			-- a depleted player permanently stuck in Dashing with a corrected-away timer and zeroed
+			-- velocity the moment either of those fired instead of the cancel button.
+			if action == "RollCancel" then
+				if currentState ~= MovementStateDefs.Dashing then
+					return
+				end
+
+				regenRollCancelCharges(profile, now)
+				if profile.rollCancelCharges <= 0 then
+					warn(string.format("[Anti-Exploit] %s attempted a roll cancel with no charges remaining.", player.Name))
+					sendCorrection(player, profile, MovementStateChanged)
+					return
+				end
+				profile.rollCancelCharges -= 1
 			end
 
 			if targetState == MovementStateDefs.Dashing or targetState == MovementStateDefs.AirDashing then

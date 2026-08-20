@@ -14,6 +14,12 @@ local MovementConstants = {
 	DashBrakeForce = 0.85, -- fraction of residual horizontal velocity shed the instant Dashing ends
 	DashCooldown = 1.5,
 
+	-- Roll cancel (see ClientMovementState's DodgeCancel binding): cuts a grounded Dash's remaining
+	-- momentum/i-frames short in exchange for control back immediately, at the cost of a charge.
+	-- Charges regenerate on a timer, independent of DashCooldown itself.
+	RollCancelMaxCharges = 2,
+	RollCancelChargeCooldown = 3.5, -- seconds to regenerate one charge
+
 	SlideBoostMultiplier = 2.8,
 	SlideFrictionDuration = 1.2,
 

@@ -73,19 +73,24 @@ export type WeaponAnimations = {
 	Parry: string, -- one-shot for the brief Parrying window
 	ParrySuccess: string, -- plays on you the instant your parry lands
 	Parried: string, -- plays on whoever's attack just got parried
-	Hit: { string }, -- hit-reaction clips, alternated each time an unblocked hit lands on you
+	-- Hit-reaction/knockback clips are weapon-agnostic now — see CombatAnimations.
 	Idle: string, -- looped combat stance, plays whenever equipped and CombatState is Idle
 	Equip: string, -- one-shot played on equipping this weapon
 	Unequip: string, -- one-shot played on unequipping this weapon
 }
 
--- Named Sound instances under ReplicatedStorage.Assets.SFX.Combat.<WeaponRegistry key>.
+-- Named Sound instances under ReplicatedStorage.Assets.SFX.Combat.Swings.<SwingsFolderName>.
+-- Per-weapon (unlike Hit/Block, see WeaponCategorySFX, and Parry/Feint/Critical, see
+-- CombatConstants.SFX) since a swing whoosh is tied to this specific weapon's own animation, not its
+-- damage-type category. All optional: a weapon with no swing SFX (yet, or ever) just plays silently.
 export type WeaponSFX = {
-	Hit: { string }, -- the ATTACKER's weapon
-	Parry: { string }, -- the DEFENDER's weapon
-	Block: { string }, -- the DEFENDER's weapon
-	Swing: { string }, -- whoosh on M1/AerialAttack windup start; one random clip per swing
-	Flourish: string, -- whoosh on a Flourish windup start; always this one clip
+	-- Subfolder name under Swings this weapon's clips live in — not necessarily the WeaponRegistry
+	-- key (e.g. "Fist" vs "Fists"). Falls back to the WeaponRegistry key itself when unset.
+	SwingsFolderName: string?,
+
+	Swing: { string }?, -- whoosh on a grounded M1 windup start; one random clip per swing
+	AerialSwing: string?, -- whoosh on an AerialAttack windup start; always this one clip
+	Flourish: string?, -- whoosh on a Flourish windup start; always this one clip
 }
 
 -- Named VFX instances under ReplicatedStorage.Assets.VFX.Combat.General, keyed by attack kind
@@ -129,6 +134,7 @@ export type WeaponFeintStats = {
 }
 
 export type WeaponData = {
+	Category: string, -- a WeaponCategoryDefs value; picks the shared Hits/<Category> SFX (see WeaponCategorySFX)
 	Stats: WeaponStats,
 	CriticalStats: WeaponVariantStats,
 	RunningAttackStats: WeaponVariantStats,

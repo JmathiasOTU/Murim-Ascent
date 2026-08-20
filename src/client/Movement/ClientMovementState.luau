@@ -19,6 +19,10 @@ ClientMovementState.FSMReady = LemonSignal.new()
 ClientMovementState.CurrentFSM = nil
 -- Read (and cleared) by AnimationController to play a DodgeCancel one-shot instead of the target state's normal animation.
 ClientMovementState.DodgeCancelled = false
+-- Set true by AnimationController for exactly as long as the DodgeCancel one-shot is actually
+-- playing, cleared when it ends — read by ClientCombatState.isMovementLocked so a swing/parry can't
+-- cut the recovery animation short.
+ClientMovementState.RollCancelRecovering = false
 
 function ClientMovementState.start()
 	local player = Players.LocalPlayer
@@ -49,6 +53,24 @@ function ClientMovementState.start()
 		local wallJumpUsesRemaining = MovementConstants.WallJumpMaxUses
 		local wallHangStartTime = 0
 		local wallClingDoubleJumpDeadline = 0
+
+		-- Mirrors MovementValidationService's own charge count for responsiveness (skip the attempt
+		-- entirely instead of a rejected rubberband) — the server remains the actual authority.
+		local rollCancelCharges = MovementConstants.RollCancelMaxCharges
+		local rollCancelChargeRegenStart = os.clock()
+		local function refreshRollCancelCharges()
+			if rollCancelCharges >= MovementConstants.RollCancelMaxCharges then
+				rollCancelChargeRegenStart = os.clock()
+				return
+			end
+
+			local elapsed = os.clock() - rollCancelChargeRegenStart
+			local gained = math.floor(elapsed / MovementConstants.RollCancelChargeCooldown)
+			if gained > 0 then
+				rollCancelCharges = math.min(MovementConstants.RollCancelMaxCharges, rollCancelCharges + gained)
+				rollCancelChargeRegenStart += gained * MovementConstants.RollCancelChargeCooldown
+			end
+		end
 
 		-- Held off raw input, not FSM state, so a brief dash/jump/landing mid-run doesn't reset the streak.
 		local runHoldStartTime = nil
@@ -84,7 +106,7 @@ function ClientMovementState.start()
 		parkourRayParams.FilterDescendantsInstances = {character}
 		parkourRayParams.IgnoreWater = true
 
-		local function evaluateState(forceExitAction)
+		local function evaluateState(forceExitAction, remoteActionOverride: string?)
 			-- These states own their own exit transition; a blind re-evaluation must not interrupt them.
 			if not forceExitAction and (
 				fsm.CurrentState == MovementStateDefs.Dashing
@@ -130,7 +152,7 @@ function ClientMovementState.start()
 
 			local success = fsm:transition(targetState)
 			if success then
-				MovementIntent:FireServer("UpdateState", { targetState = targetState })
+				MovementIntent:FireServer(remoteActionOverride or "UpdateState", { targetState = targetState })
 			end
 		end
 
@@ -575,16 +597,29 @@ function ClientMovementState.start()
 			return Enum.ContextActionResult.Pass
 		end, false, Enum.KeyCode.Q)
 
-		-- Dodge cancel: cuts a grounded Dash short (right-click, mid-dash only), trading remaining i-frames for control back sooner.
+		-- Dodge cancel (aka roll cancel): cuts a grounded Dash short (right-click, mid-dash only),
+		-- trading remaining i-frames for control back sooner. Limited-use — see
+		-- MovementConstants.RollCancelMaxCharges/RollCancelChargeCooldown. Charges are mirrored here
+		-- purely so a depleted player doesn't even attempt it (no jarring rejected rubberband); the
+		-- server enforces the real limit regardless (see MovementValidationService).
 		ContextActionService:BindAction("DodgeCancel", function(_actionName, inputState)
 			if inputState == Enum.UserInputState.Begin and fsm.CurrentState == MovementStateDefs.Dashing then
+				refreshRollCancelCharges()
+				if rollCancelCharges <= 0 then
+					return Enum.ContextActionResult.Pass
+				end
+				rollCancelCharges -= 1
+
 				if activeTasks["Dash"] then
 					task.cancel(activeTasks["Dash"])
 					activeTasks["Dash"] = nil
 				end
 
 				ClientMovementState.DodgeCancelled = true
-				evaluateState(true)
+				-- "RollCancel", not the generic "UpdateState" every other early Dashing-exit (jump-
+				-- cancel, wall-collision stop) uses — see MovementValidationService: only THIS specific
+				-- action is charge-gated, so those other legitimate exits stay free.
+				evaluateState(true, "RollCancel")
 			end
 			return Enum.ContextActionResult.Pass
 		end, false, Enum.UserInputType.MouseButton2)

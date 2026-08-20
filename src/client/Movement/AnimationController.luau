@@ -39,8 +39,8 @@ local ANIMATION_IDS = {
 	DoubleJump1 = "rbxassetid://105731615843957",
 	DoubleJump2 = "rbxassetid://109908788558574",
 
-	TreeStanding2 = "rbxassetid://114060022362060", -- placeholder
-	TreeIdleFidget = "rbxassetid://105547805956367", -- placeholder
+	TreeStanding2 = "rbxassetid://114060022362060", 
+	TreeIdleFidget = "rbxassetid://105547805956367", 
 
 	WalkForward = "rbxassetid://94798501873440",
 	WalkFrontRight = "rbxassetid://111875231717111",
@@ -53,15 +53,15 @@ local ANIMATION_IDS = {
 }
 
 local DASH_ANIMATION_IDS = {
-	DashFront = "rbxassetid://80647979865669",
+	DashFront = "rbxassetid://138725257049301",
 	DashBack = "rbxassetid://102072453640654",
 	DashLeft = "rbxassetid://132828332941984",
 	DashRight = "rbxassetid://109325396920599",
 }
 
 local DODGE_CANCEL_ANIMATION_IDS = {
-	DodgeCancelLeft = "rbxassetid://133915887345026", -- placeholder
-	DodgeCancelRight = "rbxassetid://84186527862482", -- placeholder
+	DodgeCancelLeft = "rbxassetid://138448703912610",
+	DodgeCancelRight = "rbxassetid://98347285855830", 
 }
 
 local MAX_LEAN_STRAFE = math.rad(MovementConstants.LeanMaxAngleDegrees)
@@ -173,6 +173,10 @@ local function setupCharacterAnimations(fsm, character, includeLean)
 				local cancelTrack = loadedDashTracks[cancelTrackName]
 				if cancelTrack then
 					cancelTrack:Play(0.05)
+					ClientMovementState.RollCancelRecovering = true
+					cancelTrack.Stopped:Once(function()
+						ClientMovementState.RollCancelRecovering = false
+					end)
 				end
 			end
 		elseif loadedTracks[oldState] then

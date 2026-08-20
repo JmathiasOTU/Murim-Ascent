@@ -1,8 +1,10 @@
 -- src/shared/Combat/Weapons/Fists.luau
 --!strict
 local WeaponTypes = require(script.Parent.WeaponTypes)
+local WeaponCategoryDefs = require(script.Parent.WeaponCategoryDefs)
 
 local Fists: WeaponTypes.WeaponData = {
+	Category = WeaponCategoryDefs.Blunt,
 	Stats = {
 		HitboxSize = Vector3.new(6.5, 5.5, 5.5),
 		HitboxOffset = CFrame.new(0, 0, -3),
@@ -20,10 +22,10 @@ local Fists: WeaponTypes.WeaponData = {
 		HitboxSize = Vector3.new(6, 5.5, 6),
 		HitboxOffset = CFrame.new(0, 0, -4.5),
 		BaseDamage = 12,
-		PostureDamage = 65, -- a couple of blocked Criticals nearly breaks guard outright
+		PostureDamage = 100, -- a couple of blocked Criticals nearly breaks guard outright
 		StunTime = 0.6,
-		WindupTime = 0.45,
-		ActiveTime = 0.15,
+		WindupTime = 0.6,
+		ActiveTime = 0.25,
 		EndlagTime = 0.6,
 		MaxServerRange = 20, -- was 7 and rejecting legit hits (e.g. a 7.9-stud Critical), same fix as base M1's MaxServerRange
 		Cooldown = 3.5,
@@ -98,7 +100,7 @@ local Fists: WeaponTypes.WeaponData = {
 		},
 		RunningAttack = "rbxassetid://128939099532487",
 		AerialAttack = "rbxassetid://139541450945091",
-		Critical = "rbxassetid://87412768458270",
+		Critical = "rbxassetid://108120316811300",
 		Flourish = "rbxassetid://108904243899281",
 		Block = "rbxassetid://138361931282127",
 		BlockSuccess = "rbxassetid://136221159215388", -- impact one-shot over the held Block loop
@@ -106,18 +108,15 @@ local Fists: WeaponTypes.WeaponData = {
 		Parry = "rbxassetid://104808529880856",
 		Parried = "rbxassetid://129447946886861",
 		ParrySuccess = "rbxassetid://77877445467642", -- plays on you the instant your parry lands
-		Hit = { "rbxassetid://124222290191226", "rbxassetid://78497684623299" }, -- alternated
 		Idle = "rbxassetid://73317791100581", -- TODO: paste the fists-up combat idle stance asset id
 		Equip = "rbxassetid://88062816812508", -- TODO: paste the equip asset id
 		Unequip = "rbxassetid://103104867956975", -- TODO: paste the unequip asset id
 	},
+	-- Hit/Block SFX live in the shared Blunt category (WeaponCategorySFX) and Parry/Feint/Critical in
+	-- weapon-agnostic General (CombatConstants.SFX) — only the swing whooshes are Fists' own.
 	SFX = {
-		-- Named Sound instances under ReplicatedStorage.Assets.SFX.Combat.Fists
-		Hit = { "Hit1", "Hit2" },
-		Parry = { "Parry", "Parry sfx", "Parryv2" },
-		Block = { "Block1", "Block2" },
-		Swing = { "FistSwing1", "FistSwing2", "FistSwing3" },
-		Flourish = "FistFlourish",
+		SwingsFolderName = "Fist", -- Swings/Fist, not Swings/Fists (the WeaponRegistry key)
+		AerialSwing = "AerialSwing",
 	},
 	ImpactVFX = {
 		-- Named instances under ReplicatedStorage.Assets.VFX.Combat.General — fists are blunt, so these

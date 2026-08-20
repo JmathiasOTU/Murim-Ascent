@@ -1,6 +1,7 @@
 -- src/client/VFX/VFXPlaybackController.luau
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Debris = game:GetService("Debris")
+local TweenService = game:GetService("TweenService")
 
 local ClientMovementState = require(script.Parent.Parent.Movement.ClientMovementState)
 local RemoteMovementState = require(script.Parent.Parent.Movement.RemoteMovementState)
@@ -8,6 +9,7 @@ local MovementStateDefs = require(ReplicatedStorage.Shared.Movement.MovementStat
 local MovementConstants = require(ReplicatedStorage.Shared.Movement.MovementConstants)
 local RemoteRegistry = require(ReplicatedStorage.Shared.Net.RemoteRegistry)
 local WeaponRegistry = require(ReplicatedStorage.Shared.Combat.Weapons.WeaponRegistry)
+local WeaponCategorySFX = require(ReplicatedStorage.Shared.Combat.Weapons.WeaponCategorySFX)
 local CombatConstants = require(ReplicatedStorage.Shared.Combat.CombatConstants)
 
 local VFXPlaybackController = {}
@@ -19,14 +21,25 @@ local CombatVFXFolder = VFXFolder:WaitForChild("Combat")
 local GeneralCombatVFXFolder = CombatVFXFolder:WaitForChild("General")
 local MovementVFXFolder = VFXFolder:WaitForChild("Movement")
 local CombatSFXFolder = AssetsFolder:WaitForChild("SFX"):WaitForChild("Combat")
+local CombatHitsSFXFolder = CombatSFXFolder:WaitForChild("Hits")
+local CombatSwingsSFXFolder = CombatSFXFolder:WaitForChild("Swings")
 
--- Per-weapon Sound instances under ReplicatedStorage.Assets.SFX.Combat.<weapon name>.
-local function getWeaponSFXFolder(weaponName: string): Instance?
-	local folder = CombatSFXFolder:FindFirstChild(weaponName)
-	if not folder then
-		warn("Missing " .. weaponName .. " in ReplicatedStorage.Assets.SFX.Combat")
+-- Category-shared Sound instances under ReplicatedStorage.Assets.SFX.Combat.Hits.<category>.<sub>
+-- (LandedHit/BlockedHit) — see WeaponCategorySFX for the names-to-randomize-between side.
+local function getCategoryHitSFXFolder(category: string?, subFolderName: string): Instance?
+	if not category then return nil end
+
+	local categoryFolder = CombatHitsSFXFolder:FindFirstChild(category)
+	if not categoryFolder then
+		warn("Missing " .. category .. " in ReplicatedStorage.Assets.SFX.Combat.Hits")
+		return nil
 	end
-	return folder
+
+	local subFolder = categoryFolder:FindFirstChild(subFolderName)
+	if not subFolder then
+		warn("Missing " .. subFolderName .. " in " .. categoryFolder:GetFullName())
+	end
+	return subFolder
 end
 
 -- Weapon-agnostic SFX (see CombatConstants.SFX).
@@ -165,18 +178,72 @@ local function spawnClashSparks(vfxNames, parent: Instance, sourceFolder: Instan
 	end
 end
 
+local AFTERIMAGE_FADE_TIME = 0.5
+local AFTERIMAGE_TRANSPARENCY_BUMP = 0.35 -- added on top of each part's own existing transparency
+
+-- Dodge afterimage: a frozen, non-interactive snapshot of sourceCharacter's current pose, dropped at
+-- snapshotCFrame (the spot they were actually standing in when the i-frame dodge happened — see
+-- HitRegistrationService), then faded out and destroyed. Cloning preserves whatever pose/appearance
+-- the source rig had at clone time; PivotTo just moves that pose to the right place without altering it.
+local function spawnAfterimage(sourceCharacter: Model?, snapshotCFrame: CFrame?)
+	if not sourceCharacter or not snapshotCFrame then return end
+
+	local clone = sourceCharacter:Clone()
+
+	for _, descendant in ipairs(clone:GetDescendants()) do
+		if descendant:IsA("Script") or descendant:IsA("LocalScript") then
+			descendant:Destroy()
+		elseif descendant:IsA("BasePart") then
+			descendant.Anchored = true
+			descendant.CanCollide = false
+			descendant.CanQuery = false
+			descendant.CanTouch = false
+			descendant.Massless = true
+		end
+	end
+
+	local humanoid = clone:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+		humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
+		humanoid.NameDisplayDistance = 0
+	end
+
+	clone:PivotTo(snapshotCFrame)
+	clone.Parent = workspace
+
+	local fadeInfo = TweenInfo.new(AFTERIMAGE_FADE_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	for _, descendant in ipairs(clone:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			descendant.Transparency = math.clamp(descendant.Transparency + AFTERIMAGE_TRANSPARENCY_BUMP, 0, 1)
+			TweenService:Create(descendant, fadeInfo, { Transparency = 1 }):Play()
+		elseif descendant:IsA("Decal") or descendant:IsA("Texture") then
+			TweenService:Create(descendant, fadeInfo, { Transparency = 1 }):Play()
+		end
+	end
+
+	Debris:AddItem(clone, AFTERIMAGE_FADE_TIME + 0.1)
+end
+
 -- Reacts to server-broadcast combat clashes. A missing/unrecognized weaponName falls back to silence (VFX still plays).
-local function onCombatVisual(effectType: string, position: Vector3, weaponName: string?, attackKindName: string?)
+local function onCombatVisual(effectType: string, position: Vector3?, weaponName: string?, attackKindName: string?, dodgeCharacter: Model?, dodgeCFrame: CFrame?)
 	local weaponData = weaponName and WeaponRegistry[weaponName]
-	local weaponSFXFolder = weaponName and getWeaponSFXFolder(weaponName)
+	local categorySFX = weaponData and WeaponCategorySFX[weaponData.Category]
+
+	if effectType == "Dodge" then
+		spawnAfterimage(dodgeCharacter, dodgeCFrame)
+		return
+	end
 
 	if effectType == "Parry" then
 		local clashAnchor = Instance.new("Attachment")
 		clashAnchor.Position = position
 		clashAnchor.Parent = workspace.Terrain
 
-		if weaponData and weaponSFXFolder then
-			playRandomNamedSound(weaponSFXFolder, weaponData.SFX.Parry, clashAnchor)
+		-- Weapon-agnostic: whoever's parrying, it's the same sound (see CombatConstants.SFX.Parry).
+		local generalSFXFolder = getGeneralSFXFolder()
+		if generalSFXFolder then
+			playRandomNamedSound(generalSFXFolder, CombatConstants.SFX.Parry, clashAnchor)
 		end
 
 		spawnClashSparks({ "ParryVFX" }, clashAnchor)
@@ -187,11 +254,27 @@ local function onCombatVisual(effectType: string, position: Vector3, weaponName:
 		clashAnchor.Position = position
 		clashAnchor.Parent = workspace.Terrain
 
-		if weaponData and weaponSFXFolder then
-			playRandomNamedSound(weaponSFXFolder, weaponData.SFX.Block, clashAnchor)
+		if categorySFX then
+			local blockedHitFolder = getCategoryHitSFXFolder(weaponData.Category, "BlockedHit")
+			if blockedHitFolder then
+				playRandomNamedSound(blockedHitFolder, categorySFX.BlockedHit, clashAnchor)
+			end
 		end
 
 		spawnClashSparks({ "BlockPT1", "BlockPT2" }, clashAnchor)
+		Debris:AddItem(clashAnchor, 2)
+
+	elseif effectType == "GuardBreak" then
+		local clashAnchor = Instance.new("Attachment")
+		clashAnchor.Position = position
+		clashAnchor.Parent = workspace.Terrain
+
+		-- Weapon-agnostic, same as Parry/Feint/Critical (see CombatConstants.SFX.GuardBreak).
+		local generalSFXFolder = getGeneralSFXFolder()
+		if generalSFXFolder then
+			playRandomNamedSound(generalSFXFolder, CombatConstants.SFX.GuardBreak, clashAnchor)
+		end
+
 		Debris:AddItem(clashAnchor, 2)
 
 	elseif effectType == "Hit" then
@@ -199,8 +282,17 @@ local function onCombatVisual(effectType: string, position: Vector3, weaponName:
 		clashAnchor.Position = position
 		clashAnchor.Parent = workspace.Terrain
 
-		if weaponData and weaponSFXFolder then
-			playRandomNamedSound(weaponSFXFolder, weaponData.SFX.Hit, clashAnchor)
+		-- Critical's own SFX (CombatConstants.SFX.Critical) plays on windup instead (see the "Swing"
+		-- branch below) — its actual impact just uses the category's landed-hit pool like any other hit.
+		if categorySFX then
+			local landedHitFolder = getCategoryHitSFXFolder(weaponData.Category, "LandedHit")
+			if landedHitFolder then
+				if attackKindName == "AerialAttack" and categorySFX.AerialLandedHit then
+					playRandomNamedSound(landedHitFolder, { categorySFX.AerialLandedHit }, clashAnchor)
+				else
+					playRandomNamedSound(landedHitFolder, categorySFX.LandedHit, clashAnchor)
+				end
+			end
 		end
 
 		local impactVFXName = weaponData and attackKindName and weaponData.ImpactVFX[attackKindName]
@@ -211,17 +303,36 @@ local function onCombatVisual(effectType: string, position: Vector3, weaponName:
 		Debris:AddItem(clashAnchor, 2)
 
 	elseif effectType == "Swing" then
-		-- Only the "M1" combo (plain + aerial) and its Flourish finisher have swing SFX so far —
-		-- RunningAttack/Critical stay silent here until they get their own dedicated clips.
-		if attackKindName == "M1" or attackKindName == "AerialAttack" or attackKindName == "Flourish" then
+		if attackKindName == "Critical" then
+			-- Weapon-agnostic, unlike Swing/AerialSwing/Flourish below — same clip regardless of what's
+			-- equipped (see CombatConstants.SFX.Critical). This is the windup "charging up" cue; the
+			-- actual impact just uses the category's landed-hit pool (see the "Hit" branch above).
 			local clashAnchor = Instance.new("Attachment")
 			clashAnchor.Position = position
 			clashAnchor.Parent = workspace.Terrain
 
-			if weaponData and weaponSFXFolder then
-				if attackKindName == "Flourish" then
+			local generalSFXFolder = getGeneralSFXFolder()
+			if generalSFXFolder then
+				playRandomNamedSound(generalSFXFolder, CombatConstants.SFX.Critical, clashAnchor)
+			end
+
+			Debris:AddItem(clashAnchor, 2)
+
+		-- Swing/AerialSwing/Flourish are all optional (see WeaponTypes.WeaponSFX) — whichever one
+		-- this attackKindName maps to just silently does nothing if the weapon hasn't defined it.
+		elseif weaponData and (weaponData.SFX.Swing or weaponData.SFX.AerialSwing or weaponData.SFX.Flourish) then
+			local clashAnchor = Instance.new("Attachment")
+			clashAnchor.Position = position
+			clashAnchor.Parent = workspace.Terrain
+
+			local swingsFolderName = weaponData.SFX.SwingsFolderName or weaponName
+			local weaponSFXFolder = CombatSwingsSFXFolder:FindFirstChild(swingsFolderName)
+			if weaponSFXFolder then
+				if attackKindName == "Flourish" and weaponData.SFX.Flourish then
 					playRandomNamedSound(weaponSFXFolder, { weaponData.SFX.Flourish }, clashAnchor)
-				else
+				elseif attackKindName == "AerialAttack" and weaponData.SFX.AerialSwing then
+					playRandomNamedSound(weaponSFXFolder, { weaponData.SFX.AerialSwing }, clashAnchor)
+				elseif attackKindName ~= "Flourish" and attackKindName ~= "AerialAttack" and weaponData.SFX.Swing then
 					playRandomNamedSound(weaponSFXFolder, weaponData.SFX.Swing, clashAnchor)
 				end
 			end
