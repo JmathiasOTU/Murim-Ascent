@@ -24,6 +24,12 @@ ClientCombatState.CurrentFSM = nil
 ClientCombatState.ComboStep = 1 -- which M1 clip/hitbox the current swing is, read by AnimationController
 ClientCombatState.AttackType = "M1" -- "M1" | "RunningAttack" | "AerialAttack", read by AnimationController
 ClientCombatState.MovementLocked = false -- true during a RunningAttack/AerialAttack velocity lock; read by FootstepController
+-- Set true by (this file's) Combat AnimationController for exactly as long as the KnockBack one-shot
+-- (getting Flourished) is actually playing, cleared when it ends. Same shape as ClientMovementState's
+-- own RollCancelRecovering — read by isMovementLocked() below so a swing/parry/jump can't cut the
+-- knockback reaction short just because the underlying hard-stun timer (which can't know the real
+-- animation length) already lifted.
+ClientCombatState.KnockbackRecovering = false
 -- TEMP debug: press E to test the unarmed state without a real Inventory/Equip system. Fists are
 -- equipped by default so existing testing flow is unchanged unless you toggle it off.
 ClientCombatState.IsEquipped = true
@@ -95,7 +101,7 @@ local MOVEMENT_LOCKED_STATES = {
 }
 
 local function isMovementLocked(): boolean
-	if ClientMovementState.RollCancelRecovering then
+	if ClientMovementState.RollCancelRecovering or ClientCombatState.KnockbackRecovering then
 		return true
 	end
 	local movementFSM = ClientMovementState.CurrentFSM
@@ -204,6 +210,9 @@ function ClientCombatState.start()
 		-- Set right before every fsm:forceState(), cleared by the next StateChanged fire — echoing a
 		-- forced transition back to the server is actively harmful under latency, not just redundant.
 		local suppressNextEcho = false
+			-- os.clock() deadline read by CombatStunBlock below — extends the Stunned hard-stun's own
+			-- jump lock a bit past when the stun itself ends (see CombatConstants.PostStunJumpCooldown).
+			local jumpBlockedUntil = 0
 		local function scheduleTask(taskName, duration, callback)
 			if activeTasks[taskName] then
 				task.cancel(activeTasks[taskName])
@@ -278,6 +287,12 @@ function ClientCombatState.start()
 				lockMovementForStun(humanoid, stunPropertyConnections, lock.WalkSpeed, lock.JumpPower)
 			elseif HARD_STUN_DURATIONS[oldState] or WALK_LOCK_STATES[oldState] then
 				unlockMovementForStun(humanoid, stunPropertyConnections)
+			end
+
+			if newState == CombatStateDefs.Stunned and hardStunDuration then
+				-- Refreshes on every hit taken, so a chained combo keeps pushing the deadline forward
+				-- instead of it being set once off the first hit.
+				jumpBlockedUntil = os.clock() + hardStunDuration + CombatConstants.PostStunJumpCooldown
 			end
 
 			if hardStunDuration then
@@ -405,13 +420,23 @@ function ClientCombatState.start()
 			end
 
 			local isFlourish = false
+			local thisSwingComboStep = comboStep
 
 			if groundedComboType == "M1" then
 				if os.clock() - lastSwingTime > Stats.ComboResetTime then
 					comboStep = 1
+					thisSwingComboStep = 1
 				end
-				ClientCombatState.ComboStep = comboStep
-				isFlourish = comboStep == Stats.ComboLength
+				ClientCombatState.ComboStep = thisSwingComboStep
+				isFlourish = thisSwingComboStep == Stats.ComboLength
+
+				-- Advanced here, the instant the swing commits, not after Endlag completes naturally
+				-- (the old spot, further down) — getting parried mid-swing cancels this scheduleTask
+				-- chain via the ForceState handler, so that advance never ran and the same combo step
+				-- repeated on your next swing instead of continuing (e.g. parried on M2, next swing was
+				-- also M2 instead of M3). Committing to the swing at all is enough to move the combo on,
+				-- regardless of whether it actually lands, gets blocked, or gets parried.
+				comboStep = (thisSwingComboStep % Stats.ComboLength) + 1
 			end
 
 			local attackType = if isFlourish then "Flourish" else groundedComboType
@@ -433,7 +458,7 @@ function ClientCombatState.start()
 			end
 
 			if groundedComboType == "M1" then
-				print(string.format("Fist : %s", isFlourish and "Flourish" or ("M" .. comboStep)))
+				print(string.format("Fist : %s", isFlourish and "Flourish" or ("M" .. thisSwingComboStep)))
 			else
 				print(string.format("Fist : %s", attackType))
 			end
@@ -479,9 +504,6 @@ function ClientCombatState.start()
 					if not fsm:transition(CombatStateDefs.M1_Endlag) then return end
 
 					scheduleTask("CombatFlow", endlagTime, function()
-						if groundedComboType == "M1" then
-							comboStep = (comboStep % Stats.ComboLength) + 1
-						end
 						if bufferedSwing and not isMovementLocked() then
 							swing()
 						else
@@ -751,10 +773,14 @@ function ClientCombatState.start()
 		-- Hard-stun/guard/Critical-windup block: Space/Y are gated behind their own key press, so
 		-- JumpPower alone can't stop the scripted parkour abilities they trigger. Bound above
 		-- ParkourSpacebar/TreeJump's own High priority. WALK_LOCK_STATES included alongside the
-		-- hard-stuns — a movement-locked state means no jumping either.
+		-- hard-stuns — a movement-locked state means no jumping either. jumpBlockedUntil extends the
+		-- block a bit past when Stunned itself ends (see CombatConstants.PostStunJumpCooldown) — human
+		-- combo timing leaves a gap where Stunned has already lifted before the next swing lands, which
+		-- otherwise reopened a clean jump straight out of an M1 chain. isMovementLocked() covers
+		-- KnockbackRecovering too, so a Flourish's knockback animation can't be jump-cancelled early.
 		ContextActionService:BindActionAtPriority("CombatStunBlock", function(_actionName, inputState)
 			if inputState == Enum.UserInputState.Begin
-				and (HARD_STUN_DURATIONS[fsm.CurrentState] or WALK_LOCK_STATES[fsm.CurrentState])
+				and (HARD_STUN_DURATIONS[fsm.CurrentState] or WALK_LOCK_STATES[fsm.CurrentState] or os.clock() < jumpBlockedUntil or isMovementLocked())
 			then
 				return Enum.ContextActionResult.Sink
 			end
@@ -790,6 +816,10 @@ function ClientCombatState.start()
 			-- performRunningAttackDash's own task.delay isn't in activeTasks (fire-and-forget,
 			-- generation-gated) — clear this directly so a mid-lock death doesn't strand FootstepController.
 			ClientCombatState.MovementLocked = false
+			-- Dying mid-knockback-animation means knockBackTrack.Stopped may never fire (character/track
+			-- torn down instead of naturally finishing) — clear directly so a mid-knockback death doesn't
+			-- permanently strand isMovementLocked() true for the respawned character.
+			ClientCombatState.KnockbackRecovering = false
 		end
 
 		humanoid.Died:Once(cleanup)

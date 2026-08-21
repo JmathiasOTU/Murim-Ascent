@@ -196,6 +196,14 @@ local function setupCharacterAnimations(fsm, character)
 
 			if hasKnockback and knockBackTrack then
 				knockBackTrack:Play(0.05)
+				-- The server's own hard-stun timer (FlourishStats.StunTime) can't know this clip's real
+				-- length, so it can lift before the knockback animation visually finishes — this flag
+				-- (read by ClientCombatState.isMovementLocked) keeps swing/parry/jump locked out until
+				-- the animation itself actually ends, not just when the stun timer says so.
+				ClientCombatState.KnockbackRecovering = true
+				knockBackTrack.Stopped:Once(function()
+					ClientCombatState.KnockbackRecovering = false
+				end)
 				return
 			end
 

@@ -26,7 +26,7 @@ local Fists: WeaponTypes.WeaponData = {
 		StunTime = 0.6,
 		WindupTime = 0.6,
 		ActiveTime = 0.25,
-		EndlagTime = 0.6,
+		EndlagTime = 0.55,
 		MaxServerRange = 20, -- was 7 and rejecting legit hits (e.g. a 7.9-stud Critical), same fix as base M1's MaxServerRange
 		Cooldown = 3.5,
 	},

@@ -184,6 +184,15 @@ function MovementValidationService.getState(player: Player): string?
 	return profile and profile.currentState
 end
 
+-- True for a brief window after a successful roll cancel (see RollCancelIframeGraceTime) — read by
+-- HitRegistrationService/CombatDummyController alongside the normal Dashing/AirDashing i-frame check,
+-- so a hit landing in the instant right after the cancel still counts as dodged instead of the
+-- cancel's control-back trade also hard-cutting i-frames at the exact same frame.
+function MovementValidationService.hasRollCancelIframeGrace(player: Player): boolean
+	local profile = playerProfiles[player]
+	return profile ~= nil and profile.rollCancelIframeGraceUntil > os.clock()
+end
+
 function MovementValidationService.start()
 	local MovementIntent = RemoteRegistry.getEvent("MovementIntent")
 	local MovementStateChanged = RemoteRegistry.getEvent("MovementStateChanged")
@@ -199,6 +208,7 @@ function MovementValidationService.start()
 			wallJumpUsesRemaining = MovementConstants.WallJumpMaxUses,
 			rollCancelCharges = MovementConstants.RollCancelMaxCharges,
 			rollCancelChargeRegenStart = os.clock(),
+			rollCancelIframeGraceUntil = 0,
 		}
 
 		player.CharacterAdded:Connect(function()
@@ -208,6 +218,7 @@ function MovementValidationService.start()
 			profile.wallJumpUsesRemaining = MovementConstants.WallJumpMaxUses
 			profile.rollCancelCharges = MovementConstants.RollCancelMaxCharges
 			profile.rollCancelChargeRegenStart = os.clock()
+			profile.rollCancelIframeGraceUntil = 0
 		end)
 	end)
 
@@ -281,6 +292,7 @@ function MovementValidationService.start()
 					return
 				end
 				profile.rollCancelCharges -= 1
+				profile.rollCancelIframeGraceUntil = now + MovementConstants.RollCancelIframeGraceTime
 			end
 
 			if targetState == MovementStateDefs.Dashing or targetState == MovementStateDefs.AirDashing then

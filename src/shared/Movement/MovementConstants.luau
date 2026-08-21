@@ -20,6 +20,13 @@ local MovementConstants = {
 	RollCancelMaxCharges = 2,
 	RollCancelChargeCooldown = 3.5, -- seconds to regenerate one charge
 
+	-- Brief i-frame grace after a roll cancel (see MovementValidationService.hasRollCancelIframeGrace)
+	-- — cutting Dashing's own i-frames off at the exact instant the cancel fires reads as an unfair
+	-- hit in the edge-timing window right at the cancel boundary (a swing already in flight lands a
+	-- frame or two after you'd have dodged it under the old Dash timer). This buys a short cushion
+	-- instead of an instant hard cutoff.
+	RollCancelIframeGraceTime = 0.15,
+
 	SlideBoostMultiplier = 2.8,
 	SlideFrictionDuration = 1.2,
 

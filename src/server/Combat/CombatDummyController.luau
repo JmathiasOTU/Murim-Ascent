@@ -97,7 +97,10 @@ local function resolveDummyAttack(attackerHRP: BasePart, targetPlayer: Player)
 	end
 
 	local targetMovementState = MovementValidationService.getState(targetPlayer)
-	if targetMovementState and IFRAME_MOVEMENT_STATES[targetMovementState] then
+	-- Same reasoning as HitRegistrationService's own copy — see hasRollCancelIframeGrace.
+	if (targetMovementState and IFRAME_MOVEMENT_STATES[targetMovementState])
+		or MovementValidationService.hasRollCancelIframeGrace(targetPlayer)
+	then
 		if combatVisualsEvent then
 			combatVisualsEvent:FireAllClients("Dodge", nil, nil, nil, targetCharacter, targetHRP.CFrame)
 		end

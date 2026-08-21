@@ -110,7 +110,12 @@ local function handleHitRequest(player: Player, action: string, data: { target: 
 	local targetPlayer = Players:GetPlayerFromCharacter(targetCharacter)
 	if targetPlayer then
 		local targetMovementState = MovementValidationService.getState(targetPlayer)
-		if targetMovementState and IFRAME_MOVEMENT_STATES[targetMovementState] then
+		-- hasRollCancelIframeGrace covers the brief cushion right after a roll cancel (see
+		-- MovementConstants.RollCancelIframeGraceTime) — the cancel already ends Dashing itself, so
+		-- this is checked independently of targetMovementState, not as a fallback on it.
+		if (targetMovementState and IFRAME_MOVEMENT_STATES[targetMovementState])
+			or MovementValidationService.hasRollCancelIframeGrace(targetPlayer)
+		then
 			-- Dodged clean: leave an afterimage at the spot the target was actually standing in when
 			-- the hit would've landed. Reach-gated the same as a real hit so a claim from across the
 			-- map can't spam the effect on someone who was never actually threatened.

@@ -17,6 +17,13 @@ return {
 	ParriedStunTime = 0.42,
 	ParriedWalkSpeed = 3, -- WalkSpeed while Parried -- a major slow, not a full freeze like BlockBreak
 
+	-- Extra grace after a Stunned hard-stun ends before jumping/parkour is allowed again (see
+	-- ClientCombatState's CombatStunBlock). Stunned's own JumpPower=0 lock only covers the stun
+	-- itself; a hit landing with any gap before the attacker's next swing (StunTime is tuned to
+	-- cover perfect combo timing, not human timing) reopens a free frame where the target could
+	-- otherwise jump straight out of an M1 chain the instant hitstun lifts.
+	PostStunJumpCooldown = 0.5,
+
 	-- MaxAxesForce multiplier (targetMass * this) for knockback/forced-movement LinearVelocity
 	-- constraints (Flourish knockback, RunningAttack/AerialAttack dashes).
 	VelocityConstraintForceMultiplier = 1000,
@@ -51,7 +58,7 @@ return {
 	-- that exponentially decays back to 0 every frame.
 	CameraParryBlurSize = 14, -- peak BlurEffect.Size
 	CameraParryBlurSpeed = 10, -- decay-back-to-0 smoothing rate
-	CameraParryShakeMagnitudeDegrees = 5.0, -- peak random rotational jitter
+	CameraParryShakeMagnitudeDegrees = 3.0, -- peak random rotational jitter
 	CameraParryShakeDecaySpeed = 14, -- decay-back-to-0 smoothing rate; fast so it reads as a snap, not a wobble
 
 	-- Landed-M1 camera punch (see CameraController) — same rotational-shake mechanism as the parry
