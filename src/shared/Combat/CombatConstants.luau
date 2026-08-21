@@ -11,8 +11,10 @@ return {
 	BlockBreakStunTime = 2.5, -- hard stun (no attack/block/move) after posture maxes out
 
 	-- Hard stun for the ATTACKER after their swing gets parried. Global (not per-weapon) since it's
-	-- a punish applied to whoever got parried, not a property of the parrier's own weapon.
-	ParriedStunTime = 0.7,
+	-- a punish applied to whoever got parried, not a property of the parrier's own weapon. Scaled
+	-- down together with ParryStats.AutoParryDuration/RecoveryTime (was 0.7/0.3/0.35) to shrink the
+	-- overall post-parry dead time while keeping the parrier's priority window proportionally the same.
+	ParriedStunTime = 0.42,
 	ParriedWalkSpeed = 3, -- WalkSpeed while Parried -- a major slow, not a full freeze like BlockBreak
 
 	-- MaxAxesForce multiplier (targetMass * this) for knockback/forced-movement LinearVelocity
@@ -32,6 +34,7 @@ return {
 		Critical = { "Critical" },
 		Parry = { "Parry0", "Parry1", "Parry2" }, -- the DEFENDER's parry landing, regardless of either weapon
 		GuardBreak = { "GuardBreak" }, -- posture maxed out while Blocking, regardless of either weapon
+		Dodge = { "PerfectDodge" }, -- a hit landing on a target mid-i-frame (see HitRegistrationService's "Dodge" broadcast)
 	},
 
 	-- Combat-only camera head sway (see CameraController) — the camera picks up a smoothed offset

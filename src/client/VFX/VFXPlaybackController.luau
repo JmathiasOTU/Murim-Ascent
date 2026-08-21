@@ -2,6 +2,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Debris = game:GetService("Debris")
 local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
 
 local ClientMovementState = require(script.Parent.Parent.Movement.ClientMovementState)
 local RemoteMovementState = require(script.Parent.Parent.Movement.RemoteMovementState)
@@ -265,6 +266,40 @@ local function createClashAnchor(position: Vector3): BasePart
 	return anchor
 end
 
+-- Same as createClashAnchor, but tracks trackPart's Position every Heartbeat instead of freezing at
+-- a snapshot — WITHOUT inheriting trackPart's rotation (an Attachment parented directly onto a
+-- rotating part like Head would tilt/curve along with it, e.g. a downward head tilt swinging an
+-- "above your head" offset forward). Kept world-axis-aligned so it stays directly above regardless
+-- of how the tracked part is facing. Self-cleans via Debris after duration; caller doesn't need to
+-- separately Debris this one.
+local function createFollowAnchor(trackPart: BasePart, worldOffset: Vector3, duration: number): BasePart
+	local anchor = Instance.new("Part")
+	anchor.Name = "ClashAnchor"
+	anchor.Anchored = true
+	anchor.CanCollide = false
+	anchor.CanQuery = false
+	anchor.CanTouch = false
+	anchor.Transparency = 1
+	anchor.Size = Vector3.new(0.1, 0.1, 0.1)
+	anchor.CFrame = CFrame.new(trackPart.Position + worldOffset)
+	anchor.Parent = workspace
+
+	local connection: RBXScriptConnection
+	connection = RunService.Heartbeat:Connect(function()
+		if not trackPart.Parent then
+			connection:Disconnect()
+			return
+		end
+		anchor.CFrame = CFrame.new(trackPart.Position + worldOffset)
+	end)
+	Debris:AddItem(anchor, duration)
+	task.delay(duration, function()
+		connection:Disconnect()
+	end)
+
+	return anchor
+end
+
 local CLASH_SPARK_LIGHT_FADE_TIME = 0.5
 
 -- Clones every Attachment inside a template and reparents each directly onto anchorPart. The
@@ -317,20 +352,66 @@ local function spawnClashSparks(vfxNames, anchorPart: BasePart, sourceFolder: In
 	end
 end
 
--- Reacts to server-broadcast combat clashes. A missing/unrecognized weaponName falls back to silence (VFX still plays).
--- _dodgeCharacter/_dodgeCFrame ride along on the "Dodge" broadcast (see HitRegistrationService)
--- for whatever visual a dodge/i-frame gets — no handler here currently; a prior afterimage
--- attempt was pulled pending a different implementation. _parriedAttackerCharacter similarly
--- rides along on "Parry" (the person whose swing just got parried) — a GotParried wind-effect
--- attempt on them was also pulled pending a different implementation; the server still sends it.
+local DODGE_AFTERIMAGE_FADE_TIME = 0.4
+-- Reads as an afterimage/ghost from the instant it appears, not a solid double stood next to you.
+local DODGE_AFTERIMAGE_START_TRANSPARENCY = 0.35
+
+-- Freezes a translucent copy of the dodging character at the exact spot the hit would've landed
+-- (dodgeCFrame) — not wherever the live character has since moved to under latency — then fades it
+-- out. Scripts/Humanoid are stripped off the clone so nothing on it re-drives the pose (Animate) or
+-- plays a duplicate breathing/footstep sound; every part just freezes anchored in whatever pose it
+-- was cloned mid-animation.
+local function spawnDodgeAfterimage(character: Model, atCFrame: CFrame)
+	-- Character rigs here are Archivable = false (likely anti-mesh-theft) — Clone() returns nil on a
+	-- non-Archivable instance, so it's flipped true only for this synchronous clone call and restored
+	-- immediately after; nothing yields in between, so there's no window for anything else to exploit it.
+	local wasArchivable = character.Archivable
+	character.Archivable = true
+	local clone = character:Clone()
+	character.Archivable = wasArchivable
+	if not clone then
+		return
+	end
+	clone.Name = "DodgeAfterimage"
+
+	for _, descendant in ipairs(clone:GetDescendants()) do
+		if descendant:IsA("Script") or descendant:IsA("LocalScript") or descendant:IsA("Humanoid") then
+			descendant:Destroy()
+		elseif descendant:IsA("BasePart") then
+			descendant.Anchored = true
+			descendant.CanCollide = false
+			descendant.CanQuery = false
+			descendant.CanTouch = false
+			descendant.Transparency = math.max(descendant.Transparency, DODGE_AFTERIMAGE_START_TRANSPARENCY)
+		end
+	end
+
+	clone:PivotTo(atCFrame)
+	clone.Parent = workspace
+
+	local fadeInfo = TweenInfo.new(DODGE_AFTERIMAGE_FADE_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	for _, descendant in ipairs(clone:GetDescendants()) do
+		if descendant:IsA("BasePart") or descendant:IsA("Decal") then
+			TweenService:Create(descendant, fadeInfo, { Transparency = 1 }):Play()
+		end
+	end
+
+	Debris:AddItem(clone, DODGE_AFTERIMAGE_FADE_TIME)
+end
+
+-- Reacts to server-broadcast combat clashes. A missing/unrecognized weaponName falls back to silence
+-- (VFX still plays). effectCharacter is reused across effect types for whichever character a follow
+-- effect needs: the dodger on "Dodge" (afterimage clone source, alongside dodgeCFrame) or the caster
+-- on "Swing" (Perilous telegraph anchor). parriedAttackerCharacter rides along on "Parry" specifically
+-- (the person whose swing just got parried) for the GotParried wind effect on their torso.
 local function onCombatVisual(
 	effectType: string,
 	position: Vector3?,
 	weaponName: string?,
 	attackKindName: string?,
-	_dodgeCharacter: Model?,
-	_dodgeCFrame: CFrame?,
-	_parriedAttackerCharacter: Model?
+	effectCharacter: Model?,
+	dodgeCFrame: CFrame?,
+	parriedAttackerCharacter: Model?
 )
 	local weaponData = weaponName and WeaponRegistry[weaponName]
 	local categorySFX = weaponData and WeaponCategorySFX[weaponData.Category]
@@ -347,6 +428,29 @@ local function onCombatVisual(
 		local parryVFXName = PARRY_VFX_NAMES[math.random(1, #PARRY_VFX_NAMES)]
 		spawnClashSparks({ parryVFXName }, clashAnchor, GeneralCombatVFXFolder)
 		Debris:AddItem(clashAnchor, 2)
+
+		-- GotParried wind effect wraps around whoever's swing just got parried, anchored to their
+		-- torso (not the static clash midpoint) so it follows them through the punish knockback.
+		local parriedTorso = parriedAttackerCharacter and parriedAttackerCharacter:FindFirstChild("HumanoidRootPart")
+		if parriedTorso then
+			local torsoAttachment = Instance.new("Attachment")
+			torsoAttachment.Name = "GotParriedFollow"
+			torsoAttachment.Parent = parriedTorso
+			spawnClashSparks({ "GotParried" }, torsoAttachment, GeneralCombatVFXFolder)
+
+			-- The GotParried template carries its own baked local offset (authored for the old
+			-- world-anchored placement pattern, not for being parented onto a body part) — left as-is
+			-- it reads as "always in front of you" since the attacker is always facing you when their
+			-- swing gets parried. Zeroed here so it actually centers on the torso.
+			for _, child in ipairs(torsoAttachment:GetChildren()) do
+				if child:IsA("Attachment") then
+					child.Position = Vector3.zero
+					child.Orientation = Vector3.zero
+				end
+			end
+
+			Debris:AddItem(torsoAttachment, 2)
+		end
 
 	elseif effectType == "Block" then
 		local clashAnchor = createClashAnchor(position)
@@ -373,6 +477,22 @@ local function onCombatVisual(
 		spawnClashSparks({ "GuardBreak" }, clashAnchor, GeneralCombatVFXFolder)
 
 		Debris:AddItem(clashAnchor, 2)
+
+	elseif effectType == "Dodge" then
+		if not dodgeCFrame then return end
+		local clashAnchor = createClashAnchor(dodgeCFrame.Position)
+
+		-- Weapon-agnostic, same as Parry/GuardBreak (see CombatConstants.SFX.Dodge).
+		local generalSFXFolder = getGeneralSFXFolder()
+		if generalSFXFolder then
+			playRandomNamedSound(generalSFXFolder, CombatConstants.SFX.Dodge, clashAnchor)
+		end
+
+		Debris:AddItem(clashAnchor, 2)
+
+		if effectCharacter then
+			spawnDodgeAfterimage(effectCharacter, dodgeCFrame)
+		end
 
 	elseif effectType == "Hit" then
 		local clashAnchor = createClashAnchor(position)
@@ -416,9 +536,21 @@ local function onCombatVisual(
 			end
 			Debris:AddItem(generalAnchor, 2)
 
-			local telegraphAnchor = createClashAnchor(position + CRITICAL_TELEGRAPH_HEIGHT_OFFSET)
-			spawnClashSparks({ "Perilous" }, telegraphAnchor, GeneralCombatVFXFolder)
-			Debris:AddItem(telegraphAnchor, 2)
+			-- Perilous follows the caster's own head position for the rest of the windup instead of
+			-- freezing at this snapshot position — otherwise an airborne Critical leaves the telegraph
+			-- hanging in empty air where you started jumping instead of tracking you up/down. Position-
+			-- only (createFollowAnchor), not a plain Attachment parented to Head — that would also
+			-- inherit Head's rotation, so tilting your head down would swing the "above your head" offset
+			-- forward instead of keeping it pinned straight up.
+			local swingHead = effectCharacter and effectCharacter:FindFirstChild("Head")
+			if swingHead then
+				local telegraphAnchor = createFollowAnchor(swingHead, CRITICAL_TELEGRAPH_HEIGHT_OFFSET, 2)
+				spawnClashSparks({ "Perilous" }, telegraphAnchor, GeneralCombatVFXFolder)
+			else
+				local telegraphAnchor = createClashAnchor(position + CRITICAL_TELEGRAPH_HEIGHT_OFFSET)
+				spawnClashSparks({ "Perilous" }, telegraphAnchor, GeneralCombatVFXFolder)
+				Debris:AddItem(telegraphAnchor, 2)
+			end
 
 			local footAnchor = createClashAnchor(position + CRITICAL_STEP_FOOT_OFFSET)
 			spawnClashSparks({ "CriticalStep" }, footAnchor, GeneralCombatVFXFolder)

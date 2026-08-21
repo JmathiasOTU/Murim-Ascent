@@ -108,9 +108,8 @@ end
 -- real parry, not a normal hit) and only actually forces ParryRecovery once `duration` elapses with
 -- nothing further landing. A second parry within the window re-calls this, cancelling and
 -- restarting the timer — chained parries keep extending, never stacking multiple pending timers.
--- The `playerProfiles[player] == profile` check guards against a stale timer outliving a
--- death/respawn (CharacterAdded replaces the whole profile table; the orphaned old one should
--- never force anything).
+-- The `playerProfiles[player] == profile` check guards against a stale timer outliving a death/respawn
+-- (CharacterAdded replaces the whole profile table; the orphaned old one should never force anything).
 function CombatStateService.extendParryGrace(player: Player, duration: number)
 	local profile = getProfile(player)
 	if profile.parryGraceTask then
@@ -280,7 +279,10 @@ function CombatStateService.start()
 			local hrp = character and character:FindFirstChild("HumanoidRootPart")
 			if hrp then
 				local attackType = (data and data.attackType) or "M1"
-				combatVisualsEvent:FireAllClients("Swing", hrp.Position, EQUIPPED_WEAPON, attackType)
+				-- character rides along (trailing slot) so an airborne Critical's Perilous telegraph can
+				-- follow the caster's head instead of freezing at this snapshot position — see
+				-- VFXPlaybackController's "Swing" branch.
+				combatVisualsEvent:FireAllClients("Swing", hrp.Position, EQUIPPED_WEAPON, attackType, character)
 			end
 		end
 	end)

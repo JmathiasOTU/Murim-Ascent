@@ -105,6 +105,7 @@ export type WeaponImpactVFX = {
 	M1: string?,
 	AerialAttack: string?,
 	Flourish: string?,
+	Critical: string?,
 }
 
 -- Committed forward LinearVelocity for the whole RunningAttack swing, re-read every frame so you

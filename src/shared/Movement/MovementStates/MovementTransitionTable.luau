@@ -156,7 +156,7 @@ return {
 	[MovementStateDefs.WallClingDoubleJump] = {
 		[MovementStateDefs.Falling] = true,
 		[MovementStateDefs.Idle] = true,
-		[MovementStateDefs.Walking] = true,
+		[MovementStateDefs.Walking] = false,
 		[MovementStateDefs.Running] = true,
 		[MovementStateDefs.Sprinting] = true,
 		[MovementStateDefs.Crouching] = true,
@@ -219,7 +219,7 @@ return {
 	},
 	[MovementStateDefs.WallBoost] = {
 		[MovementStateDefs.Falling] = true,
-		[MovementStateDefs.Idle] = true,
+		[MovementStateDefs.Idle] = false,
 		[MovementStateDefs.Walking] = true,
 		[MovementStateDefs.Running] = true,
 		[MovementStateDefs.Sprinting] = true,

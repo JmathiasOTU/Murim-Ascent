@@ -29,6 +29,15 @@ ClientMovementState.RollCancelRecovering = false
 -- that retry off, hence the dedicated signal instead of combat polling the flag every frame.
 ClientMovementState.RollCancelChanged = LemonSignal.new()
 
+-- TEMP debug: traces i-frame uptime (Dashing/AirDashing) in real time, mirrors CombatMoveUtils'
+-- own SHOW_HITBOX_DEBUG box but blue, since this covers the whole body rather than a swing's
+-- swept region. Client-only, never replicated.
+local SHOW_IFRAME_DEBUG = true
+local IFRAME_DEBUG_STATES = {
+	[MovementStateDefs.Dashing] = true,
+	[MovementStateDefs.AirDashing] = true,
+}
+
 function ClientMovementState.start()
 	local player = Players.LocalPlayer
 	local MovementIntent = RemoteRegistry.getEvent("MovementIntent")
@@ -48,6 +57,54 @@ function ClientMovementState.start()
 
 		local fsm = FSM.new(MovementStateDefs.Idle, MovementTransitionTable)
 		ClientMovementState.CurrentFSM = fsm
+
+		-- TEMP debug: envelopes the whole body (not a swing's narrow swept region) for as long as
+		-- fsm.CurrentState carries i-frames, however that state is entered or left (roll cancel,
+		-- jump-cancel, wall-collision stop, or just DashDuration/AirDashDuration running out) — see
+		-- IFRAME_MOVEMENT_STATES in HitRegistrationService for the server-side check this mirrors.
+		local iframeDebugBox: BasePart? = nil
+		local iframeDebugConnection: RBXScriptConnection? = nil
+		local function hideIframeDebugBox()
+			if iframeDebugConnection then
+				iframeDebugConnection:Disconnect()
+				iframeDebugConnection = nil
+			end
+			if iframeDebugBox then
+				iframeDebugBox:Destroy()
+				iframeDebugBox = nil
+			end
+		end
+		local function showIframeDebugBox()
+			hideIframeDebugBox()
+
+			local box = Instance.new("Part")
+			box.Name = "IframeDebug"
+			box.Anchored = true
+			box.CanCollide = false
+			box.CanQuery = false
+			box.CanTouch = false
+			box.Material = Enum.Material.ForceField
+			box.Color = Color3.new(0, 0, 1)
+			box.Transparency = 0.5
+			box.Parent = workspace
+			iframeDebugBox = box
+
+			iframeDebugConnection = RunService.Heartbeat:Connect(function()
+				local boundsCFrame, boundsSize = character:GetBoundingBox()
+				box.CFrame = boundsCFrame
+				box.Size = boundsSize
+			end)
+		end
+		local iframeDebugFSMConnection: RBXScriptConnection? = nil
+		if SHOW_IFRAME_DEBUG then
+			iframeDebugFSMConnection = fsm.StateChanged:Connect(function(_oldState, newState)
+				if IFRAME_DEBUG_STATES[newState] then
+					showIframeDebugBox()
+				else
+					hideIframeDebugBox()
+				end
+			end)
+		end
 
 		local isCrouchToggled = false
 		local isRunningHeld = false
@@ -161,8 +218,17 @@ function ClientMovementState.start()
 			end
 		end
 
+		-- FloorMaterial ~= Air used to gate this, but it reads false-grounded right as WallBoost ends
+		-- (still brushing the wall it just launched off of) even though the humanoid's real physics
+		-- state is still Freefall — stranding the FSM in a grounded state (e.g. Walking) mid-air with
+		-- no way back to Falling. GetState() is the same authoritative signal the humanoidStateConnection
+		-- handler below already trusts for real landings (Landed/Running/RunningNoPhysics).
 		local function endAirborneStateToFalling()
-			if humanoid.FloorMaterial ~= Enum.Material.Air then
+			local humanoidState = humanoid:GetState()
+			if humanoidState == Enum.HumanoidStateType.Landed
+				or humanoidState == Enum.HumanoidStateType.Running
+				or humanoidState == Enum.HumanoidStateType.RunningNoPhysics
+			then
 				evaluateState(true)
 				return false
 			end
@@ -649,6 +715,10 @@ function ClientMovementState.start()
 			renderConn:Disconnect()
 			correctionConnection:Disconnect()
 			humanoidStateConnection:Disconnect()
+			if iframeDebugFSMConnection then
+				iframeDebugFSMConnection:Disconnect()
+			end
+			hideIframeDebugBox()
 			ContextActionService:UnbindAction("ToggleCrouch")
 			ContextActionService:UnbindAction("ToggleRun")
 			ContextActionService:UnbindAction("TriggerDash")

@@ -85,8 +85,10 @@ local Fists: WeaponTypes.WeaponData = {
 
 		-- Beat before your own free follow-up once the parry (plus any AutoParryDuration extension)
 		-- is fully over, so it's not a frame-1 counter — the person you parried gets ParriedStunTime
-		-- (0.7s) either way.
-		RecoveryTime = 0.35,
+		-- (see CombatConstants) either way. Scaled down together with AutoParryDuration and
+		-- ParriedStunTime (was 0.35) to shrink the overall post-parry dead time while keeping the
+		-- parrier's priority window proportionally the same.
+		RecoveryTime = 0.21,
 
 		-- Lockout on a fresh Parrying attempt, counted from the moment F is pressed (not from a whiff)
 		-- so rapid-tapping F can't bypass it by releasing before the window naturally closes. A
@@ -97,7 +99,8 @@ local Fists: WeaponTypes.WeaponData = {
 		-- Landing a parry buys this much extra time where any further incoming hit is ALSO
 		-- auto-parried, without needing to re-press F — lets you survive a multi-hit combo off one
 		-- correctly-timed parry. Server-authoritative: see CombatStateService.extendParryGrace.
-		AutoParryDuration = 0.3,
+		-- Scaled down together with RecoveryTime/ParriedStunTime (was 0.3).
+		AutoParryDuration = 0.18,
 
 		PostureRelief = 15, -- posture healed off your own bar the instant a parry lands
 
@@ -142,6 +145,9 @@ local Fists: WeaponTypes.WeaponData = {
 		-- Reuses the AerialBluntM1 look rather than a Flourish-specific one — it's the last, heaviest
 		-- combo hit, so the bigger aerial impact reads better than the plain M1 punch.
 		Flourish = "AerialBluntM1",
+		-- Same reasoning as Flourish above: Critical is a single heavy hit (100 posture damage), so it
+		-- gets the bigger aerial impact look too, plus BluntHitBlood below since Fists is Blunt-category.
+		Critical = "AerialBluntM1",
 	},
 }
 
